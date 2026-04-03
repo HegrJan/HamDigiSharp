@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="HamDigiSharp/HamDigiSharp.csproj" />
+  <Project Path="HamDigiSharp.Example/HamDigiSharp.Example.csproj" />
+  <Project Path="HamDigiSharp.Tests/HamDigiSharp.Tests.csproj" />
+  <Project Path="HamDigiSharp.Demo/HamDigiSharp.Demo.csproj" />
+</Solution>

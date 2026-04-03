@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <PackageId>HamDigiSharp</PackageId>
+    <Version>1.0.0</Version>
+    <Authors>Jan Hegr (OK1TE)</Authors>
+    <Copyright>Copyright (C) 2024-2025 Jan Hegr (OK1TE)</Copyright>
+    <Description>Ham radio digital mode (FT8, FT4, FT2, …) decoding and encoding library</Description>
+    <PackageLicenseExpression>GPL-3.0-or-later</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/HegrJan/HamDigiSharp</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/HegrJan/HamDigiSharp</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>ham-radio;ft8;ft4;digital-modes;wsjtx;decoding;encoding;hamdigisharp</PackageTags>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MathNet.Numerics" Version="5.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="HamDigiSharp.Tests" />
+  </ItemGroup>
+
+</Project>

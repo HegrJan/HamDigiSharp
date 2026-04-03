@@ -1,0 +1,32 @@
+NOTICE
+======
+
+HamDigiEngine is a C# port and adaptation of algorithms and protocol implementations
+originally developed in WSJT-X and MSHV.
+
+----------------------------------------------------------------------------
+WSJT-X (https://wsjt.sourceforge.io/)
+
+  The algorithms, source code, look-and-feel of WSJT-X and related programs,
+  and protocol specifications for the modes FSK441, FST4, FST4W, FT4, FT8,
+  JT4, JT6M, JT9, JT44, JT65, JTMS, Q65, QRA64, ISCAT, and MSK144 are
+  Copyright (C) 2001-2025 by one or more of the following authors:
+  Joseph Taylor, K1JT; Bill Somerville, G4WJS; Steven Franke, K9AN;
+  Nico Palermo, IV3NWV; Uwe Risse, DG2YCB; Brian Moran, N9ADG;
+  Greg Beam, KI7MT; Michael Black, W9MDB; Edson Pereira, PY2SDR;
+  Philip Karn, KA9Q; John Nelson, G4KLA; Charles Suckling, DL3WDG;
+  and other members of the WSJT Development Group.
+
+  WSJT-X is distributed under the GNU General Public License v3 or later.
+  Source: https://sourceforge.net/p/wsjt/wsjtx/ci/master/tree/
+
+----------------------------------------------------------------------------
+MSHV (http://lz2hv.org/mshv)
+
+  MSHV is Copyright (C) 2015-2024 Hrisimir Hristov, LZ2HV.
+  MSHV is distributed under the GNU General Public License v3 or later.
+
+----------------------------------------------------------------------------
+
+HamDigiEngine itself is licensed under the GNU General Public License v3
+or later (see LICENSE).  Copyright (C) 2024-2025 Jan Hegr (OK1TE) <ok1te@email.cz>.

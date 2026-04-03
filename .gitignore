@@ -1,0 +1,20 @@
+# Build output
+bin/
+obj/
+build/
+*.user
+*.suo
+.vs/
+_ffttest/
+
+# Scratch / diagnostic scripts
+diag*.csx
+diag*.py
+
+# IDE
+.idea/
+*.DotSettings.user
+
+# OS
+.DS_Store
+Thumbs.db

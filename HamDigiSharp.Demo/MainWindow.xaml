@@ -1,0 +1,181 @@
+<Window x:Class="HamDigiSharp.Demo.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="HamDigiEngine — Digital Mode Decoder"
+        Width="720" Height="600"
+        MinWidth="560" MinHeight="500"
+        AutomationProperties.Name="HamDigiEngine Digital Mode Decoder"
+        AutomationProperties.HelpText="Decode and encode ham radio digital mode signals"
+        Loaded="Window_Loaded">
+
+    <DockPanel Margin="12" LastChildFill="True">
+
+        <!-- Status bar — LiveSetting="Polite" lets screen readers announce changes -->
+        <StatusBar DockPanel.Dock="Bottom" Margin="0,8,0,0">
+            <StatusBarItem>
+                <TextBlock x:Name="txbStatus"
+                           Text="Ready"
+                           AutomationProperties.LiveSetting="Polite"/>
+            </StatusBarItem>
+        </StatusBar>
+
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>         <!-- Mode -->
+                <RowDefinition Height="Auto"/>         <!-- Audio Source -->
+                <RowDefinition Height="Auto"/>         <!-- Start/Stop -->
+                <RowDefinition Height="Auto"/>         <!-- Decoded label -->
+                <RowDefinition Height="*" MinHeight="120"/> <!-- Decoded TextBox -->
+                <RowDefinition Height="Auto"/>         <!-- Transmit -->
+            </Grid.RowDefinitions>
+
+            <!-- ── Mode selector ─────────────────────────────────────────── -->
+            <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
+                <Label x:Name="lblMode"
+                       Content="_Mode:"
+                       Target="{Binding ElementName=cboMode}"
+                       VerticalAlignment="Center"/>
+                <ComboBox x:Name="cboMode"
+                          Width="160" Margin="4,0,0,0"
+                          SelectedIndex="0"
+                          AutomationProperties.LabeledBy="{Binding ElementName=lblMode}"
+                          AutomationProperties.HelpText="Select digital mode"
+                          SelectionChanged="CboMode_SelectionChanged">
+                </ComboBox>
+            </StackPanel>
+
+            <!-- ── Audio Source ──────────────────────────────────────────── -->
+            <GroupBox Grid.Row="1"
+                      Header="Audio Source"
+                      Margin="0,0,0,10"
+                      AutomationProperties.Name="Audio Source"
+                      AutomationProperties.HelpText="Choose real-time sound card capture or decoding from a WAV file">
+                <Grid Margin="4,4,4,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <RadioButton Grid.Row="0" Grid.Column="0"
+                                 x:Name="rbRealTime"
+                                 Content="_Real-time:"
+                                 IsChecked="True" Margin="0,0,0,6"
+                                 VerticalAlignment="Center"
+                                 AutomationProperties.Name="Real-time sound card"
+                                 AutomationProperties.HelpText="Capture and decode audio from a sound card"
+                                 Checked="RbAudioSource_Checked"/>
+
+                    <ComboBox Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="2"
+                              x:Name="cboAudioDevice"
+                              Margin="6,0,0,6"
+                              IsEnabled="{Binding IsChecked, ElementName=rbRealTime}"
+                              AutomationProperties.Name="Audio input device"
+                              AutomationProperties.HelpText="Select the sound card input device for real-time decoding"/>
+
+                    <RadioButton Grid.Row="1" Grid.Column="0"
+                                 x:Name="rbWavFile"
+                                 Content="_WAV file:"
+                                 VerticalAlignment="Center"
+                                 AutomationProperties.Name="WAV file"
+                                 AutomationProperties.HelpText="Load and decode audio from a WAV file"
+                                 Checked="RbAudioSource_Checked"/>
+
+                    <TextBox Grid.Row="1" Grid.Column="1"
+                             x:Name="txtWavPath"
+                             Margin="6,0,0,0" IsReadOnly="True"
+                             IsEnabled="{Binding IsChecked, ElementName=rbWavFile}"
+                             VerticalAlignment="Center"
+                             AutomationProperties.Name="WAV file path"
+                             AutomationProperties.HelpText="Path to the selected WAV file. Use Browse to change."/>
+
+                    <Button Grid.Row="1" Grid.Column="2"
+                            x:Name="btnBrowse"
+                            Content="_Browse…"
+                            Width="90" Margin="6,0,0,0"
+                            IsEnabled="False"
+                            AutomationProperties.Name="Browse for WAV file"
+                            AutomationProperties.HelpText="Open a file dialog to select a WAV file for decoding"
+                            Click="BtnBrowse_Click"/>
+                </Grid>
+            </GroupBox>
+
+            <!-- ── Start / Stop ──────────────────────────────────────────── -->
+            <Button Grid.Row="2"
+                    x:Name="btnStartStop"
+                    Content="▶ _Start Decoding"
+                    HorizontalAlignment="Left"
+                    MinWidth="185" Margin="0,0,0,10"
+                    AutomationProperties.Name="Start Decoding"
+                    AutomationProperties.HelpText="Start or stop the decoding process"
+                    Click="BtnStartStop_Click"/>
+
+            <!-- ── Decoded messages ───────────────────────────────────────── -->
+            <Label Grid.Row="3"
+                   x:Name="lblDecoded"
+                   Content="_Decoded Messages:"
+                   Target="{Binding ElementName=rtbDecoded}"
+                   Margin="0,0,0,2"/>
+
+            <!-- RichTextBox exposes as ControlType.Document — JAWS virtual cursor
+                 navigates by character/word/line without any extra configuration. -->
+            <RichTextBox Grid.Row="4"
+                         x:Name="rtbDecoded"
+                         IsReadOnly="True"
+                         IsReadOnlyCaretVisible="True"
+                         FontFamily="Consolas" FontSize="10"
+                         VerticalScrollBarVisibility="Auto"
+                         HorizontalScrollBarVisibility="Auto"
+                         Margin="0,0,0,10"
+                         AutomationProperties.LabeledBy="{Binding ElementName=lblDecoded}"
+                         AutomationProperties.HelpText="Log of decoded messages. New messages are added at the bottom without moving your reading position.">
+                <RichTextBox.ContextMenu>
+                    <ContextMenu>
+                        <MenuItem Header="Copy" Command="ApplicationCommands.Copy"/>
+                        <Separator/>
+                        <MenuItem Header="Clear" Click="MenuClearLog_Click"/>
+                    </ContextMenu>
+                </RichTextBox.ContextMenu>
+                <!-- Remove the default 10 px bottom margin WPF adds to every Paragraph -->
+                <RichTextBox.Resources>
+                    <Style TargetType="Paragraph">
+                        <Setter Property="Margin" Value="0"/>
+                    </Style>
+                </RichTextBox.Resources>
+            </RichTextBox>
+
+            <!-- ── Transmit ───────────────────────────────────────────────── -->
+            <StackPanel Grid.Row="5">
+                <Label x:Name="lblMessage"
+                       Content="Message to _Transmit:"
+                       Target="{Binding ElementName=txtMessage}"
+                       Margin="0,0,0,2"/>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBox Grid.Column="0"
+                             x:Name="txtMessage"
+                             MaxLength="22"
+                             AutomationProperties.LabeledBy="{Binding ElementName=lblMessage}"
+                             AutomationProperties.HelpText="Message to encode and transmit, e.g. CQ W1AW FN20 (max 22 characters)"
+                              TextChanged="TxtMessage_TextChanged"/>
+                    <Button Grid.Column="1"
+                            x:Name="btnTransmit"
+                            Content="🔊 Encode &amp; _Play"
+                            IsDefault="True"
+                            MinWidth="165" Margin="8,0,0,0"
+                            AutomationProperties.Name="Encode and Play"
+                            AutomationProperties.HelpText="Encode the message and play it through the default sound card"
+                            Click="BtnTransmit_Click"/>
+                </Grid>
+            </StackPanel>
+
+        </Grid>
+    </DockPanel>
+</Window>
