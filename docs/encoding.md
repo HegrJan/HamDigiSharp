@@ -76,6 +76,24 @@ DE  callsign grid4                   e.g.  DE W1AW FN42
 
 **Report** — signed integer −50 … +49, formatted as `+07` or `-12`.
 
+### WSPR
+
+WSPR uses a compact 50-bit message: callsign, 4-char Maidenhead grid, and power in dBm.
+
+```
+callsign grid4 power                 e.g.  W1AW FN42 33
+                                           K9AN EN52 37
+```
+
+**Callsign** — standard callsign up to 6 characters (including `/P` compound forms).  
+**Grid** — 4-character Maidenhead locator (e.g. `FN42`).  
+**Power** — transmit power in dBm, rounded to the nearest legal value from:
+`{0, 3, 7, 10, 13, 17, 20, 23, 27, 30, 33, 37, 40, 43, 47, 50, 53, 57, 60}` (0 to 60 dBm, ITU steps).
+
+The encoder produces 162 symbols × 4-FSK at 12 kHz, 120-second period.  
+The decoder is a port of the wsprd pipeline (K1JT/K9AN, GPL) and is fully compatible
+with WSJT-X and other wsprd-based decoders.
+
 ### ISCAT-A/B, FSK441, FSK315, JTMS — free text
 
 ```

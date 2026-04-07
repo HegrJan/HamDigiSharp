@@ -126,3 +126,54 @@ for (int i = 0; i < 5; i++)
     if (r.Count > 0) break;  // decoded — no need for more averages
 }
 ```
+
+---
+
+## WSPR multi-pass decode
+
+WSPR uses a two-pass pipeline with signal subtraction to recover signals that would
+be masked by stronger co-channel signals:
+
+```
+Pass 1 (Fano-only)
+ ├─ decode all candidates with Fano
+ ├─ add callsigns to AP hash
+ └─ subtract decoded signals from the complex baseband
+
+Pass 2 (Fano + OSD, AP-gated)
+ ├─ re-detect candidates from cleaned baseband
+ ├─ try Fano first
+ ├─ if Fano fails → OSD fallback (depth=1)
+ └─ OSD result only accepted if callsign is in AP hash (prevents phantoms)
+```
+
+### AP hash lifetime
+
+The AP hash persists across `Decode()` calls on the **same decoder instance**,
+accumulating known callsigns over the receive session and improving sensitivity
+for stations seen in earlier periods.
+
+```csharp
+var decoder = new WsprDecoder();
+
+// Period 1 — strong station W1AW decoded; hash now contains "W1AW"
+var r1 = decoder.Decode(period1, 1400, 1600, "000000");
+
+// Period 2 — W1AW is weaker; OSD accepts it because hash contains "W1AW"
+var r2 = decoder.Decode(period2, 1400, 1600, "000200");
+
+// Start fresh (e.g., new band or new session)
+decoder.Reset();
+```
+
+### OSD depth
+
+`WsprConv.OsdDecode(softSymbols, depth: 1, out decoded)`:
+
+| `depth` | Candidates | Pre-screen | Approx. time |
+|---------|-----------|------------|--------------|
+| `1` | K+1 = 51 | ntheta=16 | &lt;5 ms |
+| `2` | ~1276 | ntheta=22 | ~50 ms |
+
+The decoder uses `depth=1` by default (real-time safe).
+

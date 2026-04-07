@@ -12,6 +12,7 @@ using HamDigiSharp.Decoders.Msk;
 using HamDigiSharp.Decoders.Pi4;
 using HamDigiSharp.Decoders.Q65;
 using HamDigiSharp.Decoders.SuperFox;
+using HamDigiSharp.Decoders.Wspr;
 using HamDigiSharp.Models;
 
 namespace HamDigiSharp.Engine;
@@ -71,6 +72,9 @@ public sealed class DecoderEngine : IDisposable
         Register(DigitalMode.IscatB,   new IscatDecoder(DigitalMode.IscatB));
         Register(DigitalMode.PI4,      new Pi4Decoder());
         Register(DigitalMode.JTMS,     new JtmsDecoder());
+
+        // ── WSPR ─────────────────────────────────────────────────────────────
+        Register(DigitalMode.Wspr,     new WsprDecoder());
     }
 
     // ── Configuration ─────────────────────────────────────────────────────────

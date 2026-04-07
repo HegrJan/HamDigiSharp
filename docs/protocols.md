@@ -15,7 +15,7 @@ using HamDigiSharp.Models;
 IProtocol proto = ProtocolRegistry.Get(DigitalMode.FT8);
 ```
 
-All 20 modes are registered. Use `ProtocolRegistry.All` for the complete dictionary
+All 21 modes are registered. Use `ProtocolRegistry.All` for the complete dictionary
 keyed by `DigitalMode`.
 
 ---

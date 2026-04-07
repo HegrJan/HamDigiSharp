@@ -3,7 +3,7 @@
 namespace HamDigiSharp.Models;
 
 /// <summary>
-/// All 19 MSHV digital modes plus SuperFox — 20 modes in total, in their canonical index order.
+/// All 19 MSHV digital modes plus SuperFox and WSPR — 21 modes in total, in their canonical index order.
 /// </summary>
 public enum DigitalMode
 {
@@ -28,6 +28,8 @@ public enum DigitalMode
     FT2     = 18,
     /// <summary>Multi-station Fox/Hound protocol within FT8 timing.</summary>
     SuperFox = 19,
+    /// <summary>Weak Signal Propagation Reporter, 120 s period; beacon/propagation mode.</summary>
+    Wspr    = 20,
 }
 
 public static class DigitalModeExtensions
@@ -50,6 +52,7 @@ public static class DigitalModeExtensions
         DigitalMode.Q65D   => 7.5,
         DigitalMode.FT2    => 3.75,  // 3.75s window (NMax=45000/12000); two stations alternate in 7.5s cycles
         DigitalMode.SuperFox => 15.0, // same period as FT8
+        DigitalMode.Wspr   => 120.0, // 2-minute period (standard WSPR)
         _ => throw new ArgumentOutOfRangeException(nameof(mode))
     };
 
@@ -66,6 +69,7 @@ public static class DigitalModeExtensions
         DigitalMode.Q65B     => 12000,
         DigitalMode.Q65C     => 12000,
         DigitalMode.Q65D     => 12000,
+        DigitalMode.Wspr     => 12000,
         _                    => 11025, // JT65A/B/C, JT6M, PI4, IscatA/B, FSK441, FSK315, JTMS
     };
 
@@ -95,6 +99,8 @@ public static class DigitalModeExtensions
         // PI4: 146 symbols × 1000/11025 s ≈ 13.24 s  (out of 30 s period)
         DigitalMode.PI4  => 146 * (1000.0 / 11025),
         // For all other modes the signal effectively fills the period.
+        // WSPR: 162 symbols × 8192/12000 s = 110.592 s  (out of 120 s period)
+        DigitalMode.Wspr => 162 * (8192.0 / 12000),
         _ => mode.PeriodSeconds(),
     };
 
@@ -120,6 +126,7 @@ public static class DigitalModeExtensions
         DigitalMode.Q65D   => "Q65D",
         DigitalMode.FT2    => "FT2",
         DigitalMode.SuperFox => "SuperFox",
+        DigitalMode.Wspr   => "WSPR",
         _ => mode.ToString()
     };
 }

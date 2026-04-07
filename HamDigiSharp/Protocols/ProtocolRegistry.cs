@@ -11,6 +11,7 @@ using HamDigiSharp.Decoders.Msk;
 using HamDigiSharp.Decoders.Pi4;
 using HamDigiSharp.Decoders.Q65;
 using HamDigiSharp.Decoders.SuperFox;
+using HamDigiSharp.Decoders.Wspr;
 using HamDigiSharp.Encoders;
 using HamDigiSharp.Models;
 
@@ -219,6 +220,15 @@ public static class ProtocolRegistry
             constraints: MessageConstraints.SuperFox(100),
             decoder: () => new SuperFoxDecoder(),
             encoder: () => new SuperFoxEncoder());
+
+        // ── WSPR ──────────────────────────────────────────────────────────────
+        d[DigitalMode.Wspr] = P(DigitalMode.Wspr,
+            "WSPR",
+            "Weak Signal Propagation Reporter, 4-FSK, 120 s period; beacon / propagation mapping",
+            freqLow: 200, freqHigh: 3000,
+            constraints: MessageConstraints.Wspr(22),
+            decoder: () => new WsprDecoder(),
+            encoder: () => new WsprEncoder());
 
         return d;
     }

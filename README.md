@@ -68,8 +68,9 @@ and verified by round-trip testing.
 | `Q65D` | 7.5 s | 12 kHz | 65-FSK + QRA LDPC/GF(64) |
 | `FT2` | 3.75 s | 12 kHz | 4-FSK + LDPC(174,91) |
 | `SuperFox` | 15 s | 12 kHz | FT8 hound + QPC polar code |
+| `Wspr` | 120 s | 12 kHz | 4-FSK + Fano R=½ K=32 (wsprd-compatible) |
 
-All 20 modes support both encode and decode.
+All 21 modes support both encode and decode.
 
 ---
 

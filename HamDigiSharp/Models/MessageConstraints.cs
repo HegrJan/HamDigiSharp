@@ -29,13 +29,15 @@ public sealed class MessageConstraints : IMessageConstraints
     /// </remarks>
     public const string FskChars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ !\"#$%&'()*+,-./?";
 
+    /// <summary>
+    /// Characters accepted by WSPR messages.
+    /// WSPR transmits structured callsign/grid/power data, not free text.
+    /// The allowed chars here are for the text representation.
+    /// </summary>
+    public const string WsprChars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ /-+";
+
     /// <summary>Characters accepted by PI4 beacon callsigns.</summary>
     public const string Pi4Chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ /";
-
-    /// <summary>
-    /// Characters accepted by SuperFox messages (base-38 callsign alphabet plus report signs).
-    /// </summary>
-    public const string SuperFoxChars = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ/+-";
 
     // ── Properties ────────────────────────────────────────────────────────────
 
@@ -111,8 +113,9 @@ public sealed class MessageConstraints : IMessageConstraints
         $"Free text — letters, digits, space, punctuation (max {maxLength})");
 
     /// <summary>
-    /// Callsign-only format used by PI4 beacon transmissions (max 8 chars).
+    /// Characters accepted by SuperFox messages (base-38 callsign alphabet plus report signs).
     /// </summary>
+    public const string SuperFoxChars = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ/+-";
     public static MessageConstraints Pi4Callsign(int maxLength = 8) => new(
         maxLength,
         Pi4Chars,
@@ -129,4 +132,13 @@ public sealed class MessageConstraints : IMessageConstraints
         maxLength,
         SuperFoxChars,
         $"\"CQ FOXCALL GRID4\" or \"FOXCALL HOUND [±NN] …\" (up to 9 hounds, max {maxLength})");
+
+    /// <summary>
+    /// WSPR beacon format: <c>"CALLSIGN GRID4 dBm"</c>, e.g. <c>"W1AW FN42 37"</c>.
+    /// Power must be 0–60 dBm, preferably a value ending in 0, 3, or 7.
+    /// </summary>
+    public static MessageConstraints Wspr(int maxLength = 22) => new(
+        maxLength,
+        WsprChars,
+        "\"CALLSIGN GRID4 dBm\" — e.g. \"W1AW FN42 37\" (0–60 dBm, ideally ending in 0, 3 or 7)");
 }
