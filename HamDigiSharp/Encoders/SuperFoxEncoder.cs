@@ -71,7 +71,7 @@ public sealed class SuperFoxEncoder : IDigitalModeEncoder
     /// <inheritdoc/>
     public float[] Encode(string message, EncoderOptions options)
     {
-        byte[] xin   = PackMessage(message);
+        byte[] xin   = PackMessage(message, options.SuperFoxSignature);
         int[]  sym   = QpcEncode(xin);
         int[]  itone = InsertSync(sym);
         return Modulate(itone, options.FrequencyHz, options.Amplitude);
@@ -82,17 +82,52 @@ public sealed class SuperFoxEncoder : IDigitalModeEncoder
     /// <summary>
     /// Packs a SuperFox message into 50 × 7-bit symbols (47 data + 3 CRC), symbol order reversed
     /// so the 21-bit Jenkins CRC occupies the first three symbols (as in WSJTX sfox_pack.f90).
+    ///
+    /// <para>Message formats:</para>
+    /// <list type="bullet">
+    ///   <item>i3=3: <c>"CQ FOXCALL GRID4"</c></item>
+    ///   <item>i3=0: <c>"FOXCALL H1 [±NN] H2 [±NN] …"</c> — up to 9 hounds</item>
+    ///   <item>i3=2: <c>"FOXCALL H1 [±NN] … ~ FREE TEXT"</c> — up to 4 hounds + 26-char text</item>
+    /// </list>
+    ///
+    /// <para>
+    /// <paramref name="notp"/> is the 20-bit one-time-pad (OTP) digital signature (0 = none).
+    /// It is placed in bits 306–325 of the message before CRC computation.
+    /// </para>
     /// </summary>
-    internal static byte[] PackMessage(string message)
+    internal static byte[] PackMessage(string message, uint notp = 0)
     {
         string[] words = message.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
         var msgbits = new bool[329]; // 47×7 data bits + 2 padding bits + 3-bit i3
 
-        if (words.Length >= 3 && words[0].Equals("CQ", StringComparison.OrdinalIgnoreCase))
-            PackCqMessage(words, msgbits);
+        // Route by message type:
+        //   i3=3: "CQ FOXCALL GRID4"              (no tilde)
+        //   i3=3: "CQ FOXCALL GRID4 ~ FREE TEXT"  (tilde after CQ header)
+        //   i3=2: "FOXCALL H1 [±NN] ... ~ TEXT"   (tilde, non-CQ)
+        //   i3=0: "FOXCALL H1 [±NN] ..."           (no tilde, non-CQ)
+        bool isCq    = words.Length >= 1 && words[0].Equals("CQ", StringComparison.OrdinalIgnoreCase);
+        int  tildeIdx = Array.IndexOf(words, "~");
+        string? freeText = tildeIdx >= 0
+            ? string.Join(" ", words[(tildeIdx + 1)..]).Trim()
+            : null;
+
+        if (isCq && freeText != null)
+            PackCqMessage(words[..tildeIdx], freeText, msgbits);
+        else if (!isCq && freeText != null)
+            PackTextResponseMessage(words[..tildeIdx], freeText, msgbits);
+        else if (isCq)
+            PackCqMessage(words, null, msgbits);
         else
             PackStandardMessage(words, msgbits);
+
+        // Write 20-bit OTP digital signature to bits 306-325 (Fortran msgbits(307:326))
+        if (notp != 0)
+        {
+            notp &= 0xFFFFFu; // mask to 20 bits
+            for (int i = 0; i < 20; i++)
+                msgbits[306 + i] = ((notp >> (19 - i)) & 1) != 0;
+        }
 
         // Convert msgbits to 47 × 7-bit symbols
         var xin = new byte[50];
@@ -112,8 +147,8 @@ public sealed class SuperFoxEncoder : IDigitalModeEncoder
         return xin;
     }
 
-    // i3=3: CQ FOXCALL GRID4
-    private static void PackCqMessage(string[] words, bool[] msgbits)
+    // i3=3: CQ FOXCALL GRID4  (or CQ FOXCALL GRID4 ~ FREE TEXT)
+    private static void PackCqMessage(string[] words, string? freeText, bool[] msgbits)
     {
         // Fox callsign encoded as 11-char base-38 string → 58-bit integer
         string foxcall = words[1].ToUpperInvariant().PadRight(11)[..11];
@@ -127,6 +162,21 @@ public sealed class SuperFoxEncoder : IDigitalModeEncoder
 
         if (words.Length >= 3 && MessagePack77.TryParseGrid4(words[2], out int igrid4))
             SetBits(igrid4, 15, msgbits, 58);        // bits 58-72
+
+        if (!string.IsNullOrWhiteSpace(freeText))
+        {
+            // Pack 26-char free text as two 13-char halves at bits 73-143 and 144-214.
+            string padded = (freeText + new string('.', 26))[..26];
+            PackText71(padded[..13], msgbits, 73);   // bits 73-143
+            PackText71(padded[13..], msgbits, 144);  // bits 144-214
+        }
+        else
+        {
+            // Write NqU1rks sentinel (0x0C2049D5) at bits 73-296 for WSJTX interoperability.
+            // The decoder checks bits 73-104 for this sentinel before attempting free-text unpack.
+            for (int block = 0; block < 7; block++)
+                SetBits(NqU1rks, 32, msgbits, 73 + block * 32);
+        }
 
         SetBits(3, 3, msgbits, 326);                 // i3=3 at bits 326-328
     }
@@ -186,6 +236,97 @@ public sealed class SuperFoxEncoder : IDigitalModeEncoder
     {
         int n = MessagePack77.Pack28(token);
         return n == 0 ? NqU1rks : n;
+    }
+
+    // i3=2: Fox callsign + up to 4 hound calls with reports + 26-char free text message.
+    // Mirrors WSJTX sfox_pack.f90 behaviour for bSendMsg=true.
+    // RR73 hounds are packed first; report hounds follow.
+    private static void PackTextResponseMessage(string[] words, string freeText, bool[] msgbits)
+    {
+        if (words.Length == 0) return;
+
+        int foxN28 = Pack28Clamped(words[0]);
+        SetBits(foxN28, 28, msgbits, 0); // bits 0-27: fox callsign
+
+        // Pre-fill all 4 report slots (bits 140-159) with n=31 (RR73 sentinel)
+        for (int i = 0; i < 20; i++) msgbits[140 + i] = true;
+
+        // Collect RR73 hounds (no following report token) — at most 4 total
+        var rr73Hounds = new List<int>();
+        for (int i = 1; i < words.Length && rr73Hounds.Count < 4; i++)
+        {
+            if (words[i].StartsWith('+') || words[i].StartsWith('-')) continue;
+            int iNext = i + 1 < words.Length ? i + 1 : i;
+            if (words[iNext].StartsWith('+') || words[iNext].StartsWith('-')) continue;
+            rr73Hounds.Add(Pack28Clamped(words[i]));
+        }
+
+        // Collect report hounds (followed by ±NN token) — up to 4−nh1 total
+        var rptHounds = new List<(int N28, int Report)>();
+        for (int i = 1; i < words.Length && rr73Hounds.Count + rptHounds.Count < 4; i++)
+        {
+            if (words[i].StartsWith('+') || words[i].StartsWith('-')) continue;
+            if (i + 1 < words.Length
+                && (words[i + 1].StartsWith('+') || words[i + 1].StartsWith('-'))
+                && int.TryParse(words[i + 1], out int rptVal))
+            {
+                rptHounds.Add((Pack28Clamped(words[i]), Math.Clamp(rptVal, -18, 12) + 18));
+                i++; // consume the report word
+            }
+        }
+
+        // Write RR73 hounds (slots 0..nh1-1); their report slots stay as n=31
+        for (int i = 0; i < rr73Hounds.Count; i++)
+            SetBits(rr73Hounds[i], 28, msgbits, 28 + 28 * i);
+
+        // Write report hounds (slots nh1..nh1+nh2-1) and their actual reports
+        int nh1 = rr73Hounds.Count;
+        for (int i = 0; i < rptHounds.Count; i++)
+        {
+            SetBits(rptHounds[i].N28,    28, msgbits, 28  + 28 * (nh1 + i));
+            SetBits(rptHounds[i].Report,  5, msgbits, 140 +  5 * (nh1 + i));
+        }
+
+        // Fill unused hound slots with sentinel
+        for (int i = nh1 + rptHounds.Count; i < 4; i++)
+            SetBits(NqU1rks, 28, msgbits, 28 + 28 * i);
+
+        // Write 26-char free text as two 13-char halves (packtext77, base-42)
+        string padded = freeText.PadRight(26)[..26];
+        PackText71(padded[..13], msgbits, 160);  // bits 160-230
+        PackText71(padded[13..], msgbits, 231);  // bits 231-301
+
+        SetBits(2, 3, msgbits, 326); // i3=2 (binary 010)
+    }
+
+    /// <summary>
+    /// Packs 13 characters into 71 bits using base-42 multi-precision arithmetic.
+    /// Inverse of <c>SuperFoxDecoder.UnpackText71</c>; alphabet: <c>" 0-9 A-Z + - . / ?"</c>.
+    /// </summary>
+    private static void PackText71(string text, bool[] msgbits, int startBit)
+    {
+        const string Abc42 = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ+-./?";
+        string m = (text ?? "").ToUpperInvariant().PadRight(13)[..13];
+
+        // Build big-endian 71-bit integer in qa[1..9] (qa[0] = overflow, should be 0)
+        var qa = new byte[10];
+        for (int i = 0; i < 13; i++)
+        {
+            int c = Math.Max(0, Abc42.IndexOf(m[i]));
+            int carry = c;
+            for (int j = 9; j >= 1; j--)
+            {
+                int v = qa[j] * 42 + carry;
+                qa[j] = (byte)(v & 0xFF);
+                carry  = v >> 8;
+            }
+        }
+
+        // Write 7 MSBs from qa[1], then all 8 bits from qa[2..9] (= 7 + 64 = 71 bits)
+        int pos = startBit;
+        for (int b = 6; b >= 0; b--) msgbits[pos++] = ((qa[1] >> b) & 1) != 0;
+        for (int k = 2; k <= 9; k++)
+            for (int b = 7; b >= 0; b--) msgbits[pos++] = ((qa[k] >> b) & 1) != 0;
     }
 
     // ── Phase 2: QPC polar encoding ────────────────────────────────────────────

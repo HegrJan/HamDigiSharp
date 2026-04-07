@@ -63,6 +63,10 @@ BuildResult result = MessageBuilder.Beacon("GB3NGI", "KN34");
 BuildResult cq = MessageBuilder.SuperFoxCq("LZ2HVV", "KN23");
 // → "CQ LZ2HVV KN23"
 
+// Fox CQ with free text appended (i3=3 + text):
+BuildResult cqText = MessageBuilder.SuperFoxCq("LZ2HVV", "KN23");
+// Pass "CQ LZ2HVV KN23 ~ EXPEDITION" directly to the encoder for i3=3 free text.
+
 // Fox compound response (up to 9 hounds: max 5 × RR73, max 4 with reports):
 BuildResult response = MessageBuilder.SuperFoxResponse("LZ2HVV", new[]
 {
@@ -71,9 +75,32 @@ BuildResult response = MessageBuilder.SuperFoxResponse("LZ2HVV", new[]
     new HoundEntry { Callsign = "K9AN",   ReportDb = +7  },
 });
 // → "LZ2HVV W4ABC -03 VK3ABC RR73 K9AN +07"
+
+// Fox compound response with free text (i3=2, up to 4 hounds + 26-char text):
+BuildResult textResp = MessageBuilder.SuperFoxTextResponse("LZ2HVV", new[]
+{
+    new HoundEntry { Callsign = "W4ABC", ReportDb = -3 },
+    new HoundEntry { Callsign = "G4XYZ" },  // RR73
+}, "QSL QRZ");
+// → "LZ2HVV W4ABC -03 G4XYZ ~ QSL QRZ"
 ```
 
-`ReportDb` range for SuperFox: −18 to +12 dB.
+`ReportDb` range for SuperFox: −18 to +12 dB.  
+Free text (i3=2): up to 26 characters from the base-42 alphabet (`space 0-9 A-Z + - . / ?`).
+
+### SuperFox digital signature
+
+The `$VERIFY$` line is emitted by the decoder when a SuperFox frame carries a non-zero
+20-bit OTP signature (set via `EncoderOptions.SuperFoxSignature`).
+
+```csharp
+if (parsed is SuperFoxSignatureMessage sig)
+{
+    Console.WriteLine(sig.FoxCallsign);   // "LZ2HVV"
+    Console.WriteLine(sig.SignatureCode); // 20-bit OTP (1 – 1,048,575)
+    bool ok = sig.SignatureCode == myKeyForThisPeriod;
+}
+```
 
 ### Generic validation
 
@@ -124,6 +151,7 @@ The `DigitalMode` argument is optional; when omitted the parser uses heuristics.
 | `ParsedMessage` | `BeaconMessage` | PI4 (`"CALL GRID"` format) |
 | `ParsedMessage` | `SuperFoxCqMessage` | `"CQ FOX GRID"` in SuperFox mode |
 | `ParsedMessage` | `SuperFoxResponseMessage` | Fox compound frame in SuperFox mode |
+| `ParsedMessage` | `SuperFoxSignatureMessage` | `"$VERIFY$ FOX NNNNNN"` digital-signature line |
 
 ### StandardMessage properties
 
@@ -165,7 +193,9 @@ the standard three-field layout (`HOUND FOX REPORT`).
 | Direction | Format | Parsed as |
 |---|---|---|
 | Build (TX) | `LZ2HVV W4ABC -03 VK3ABC RR73` | `SuperFoxResponseMessage` |
+| Build (TX) | `LZ2HVV W4ABC -03 ~ QSL QRZ` | `SuperFoxResponseMessage` (i3=2) |
 | Parse (RX) | `VK3ABC LZ2HVV RR73` | `StandardMessage` (individual hound line) |
+| Parse (RX) | `$VERIFY$ LZ2HVV 012345` | `SuperFoxSignatureMessage` |
 
 ---
 

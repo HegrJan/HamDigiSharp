@@ -17,4 +17,12 @@ public sealed class EncoderOptions
         get => _amplitude;
         set => _amplitude = Math.Clamp(value, 0.0, 0.99);
     }
+
+    /// <summary>
+    /// Optional 20-bit one-time-pad (OTP) signature code for SuperFox transmissions (0 = no signature).
+    /// When non-zero, the value is embedded in bits 306–325 of the SuperFox frame so that
+    /// receiving stations can verify the Fox's identity against a pre-shared OTP key sequence.
+    /// Valid range: 0–1,048,575 (20 bits); values larger than 20 bits are masked.
+    /// </summary>
+    public uint SuperFoxSignature { get; set; }
 }

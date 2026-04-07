@@ -1116,73 +1116,89 @@ public sealed class SuperFoxDecoder : BaseDecoder
             for (int b = 6; b >= 0; b--) bits[co++] = ((val >> b) & 1) == 1;
         }
 
-        int i3 = BinToInt(bits, 326, 329); // message type (3 bits)
-        int n28 = BinToInt(bits, 0, 28);   // Fox callsign
+        int i3  = BinToInt(bits, 326, 329); // message type (3 bits)
+        int n28 = BinToInt(bits, 0, 28);    // Fox callsign (pack28, used for i3=0/2)
 
         if (!Unpack28(n28, out string foxCall)) foxCall = "?";
 
-        if (i3 == 3) // CQ FoxCall Grid
+        if (i3 == 3) // CQ FoxCall Grid (+ optional free text)
         {
             long n58 = 0;
             for (int i = 0; i < 58; i++) { n58 <<= 1; n58 |= bits[i] ? 1L : 0L; }
             foxCall = DecodeBase38Call(n58);
 
             int n15 = BinToInt(bits, 58, 73);
-            string grid = Grid4(n15);
-            result.Add($"CQ {foxCall} {grid}");
-            return result;
-        }
+            result.Add($"CQ {foxCall} {Grid4(n15)}");
 
-        if (i3 == 2) // up to 4 hounds + free text
-        {
-            // Free text at bits 160-230 and 231-301 (71 bits each)
-            var ft1 = UnpackText71(bits, 160);
-            var ft2 = UnpackText71(bits, 231);
-            string ft = (ft1 + ft2).TrimEnd('.');
-            if (!string.IsNullOrWhiteSpace(ft)) result.Add(ft);
-        }
-
-        // Reports (5 bits each), starting at j=280 for i3=0, j=140 for i3=2
-        int jRpt = i3 == 2 ? 140 : 280;
-        int izRpt = 4;
-        var crpt = new string[5];
-        for (int i = 0; i < izRpt; i++)
-        {
-            int n = BinToInt(bits, jRpt, jRpt + 5);
-            if (n == 31) crpt[i] = "RR73";
-            else
+            // Optional free text in bits 73-143 and 144-214 (Fortran msgbits(74:144/145:215)).
+            // The encoder fills this area with NqU1rks sentinel when no text is present;
+            // check the first 32 bits (bits 73-104) for the sentinel before unpacking.
+            if (BinToInt(bits, 73, 105) != NqU1rks)
             {
-                int irpt = n - 18;
-                crpt[i] = irpt >= 0 ? $"+{irpt:D2}" : $"-{Math.Abs(irpt):D2}";
+                string ft = (UnpackText71(bits, 73) + UnpackText71(bits, 144)).TrimEnd('.');
+                if (!string.IsNullOrWhiteSpace(ft))
+                    result.Add(ft);
             }
-            jRpt += 5;
         }
-
-        // Hound callsigns
-        int iz = (i3 == 2 || i3 == 3) ? 4 : 9;
-        int ncq = 0;
-        for (int i = 0; i < iz; i++)
+        else // i3=0 (standard compound) or i3=2 (hounds + free text)
         {
-            int j   = (i + 1) * 28;
-            int n28h = BinToInt(bits, j, j + 28);
-            if (n28h == 0 || n28h == NqU1rks) continue;
-            if (!Unpack28(n28h, out string c13)) continue;
-
-            string msg = $"{c13} {foxCall}";
-            if (msg.StartsWith("CQ ", StringComparison.Ordinal)) ncq++;
-            else
+            if (i3 == 2) // up to 4 hounds + free text
             {
-                if (i3 == 2)   msg += $" {crpt[i]}";
-                else if (i <= 4) msg += " RR73";
-                else             msg += $" {crpt[i - 5]}";
+                // Free text at bits 160-230 and 231-301 (71 bits each)
+                var ft1 = UnpackText71(bits, 160);
+                var ft2 = UnpackText71(bits, 231);
+                string ft = (ft1 + ft2).TrimEnd('.');
+                if (!string.IsNullOrWhiteSpace(ft)) result.Add(ft);
             }
-            if (ncq <= 1 || !msg.StartsWith("CQ ", StringComparison.Ordinal))
-                result.Add(msg);
+
+            // Reports (5 bits each): bits 280-299 for i3=0, bits 140-159 for i3=2
+            int jRpt = i3 == 2 ? 140 : 280;
+            var crpt = new string[4];
+            for (int i = 0; i < 4; i++)
+            {
+                int n = BinToInt(bits, jRpt, jRpt + 5);
+                if (n == 31) crpt[i] = "RR73";
+                else
+                {
+                    int irpt = n - 18;
+                    crpt[i] = irpt >= 0 ? $"+{irpt:D2}" : $"-{Math.Abs(irpt):D2}";
+                }
+                jRpt += 5;
+            }
+
+            // Hound callsigns: 9 slots for i3=0, 4 for i3=2
+            int iz  = i3 == 2 ? 4 : 9;
+            int ncq = 0;
+            for (int i = 0; i < iz; i++)
+            {
+                int j    = (i + 1) * 28;
+                int n28h = BinToInt(bits, j, j + 28);
+                if (n28h == 0 || n28h == NqU1rks) continue;
+                if (!Unpack28(n28h, out string c13)) continue;
+
+                string msg = $"{c13} {foxCall}";
+                if (msg.StartsWith("CQ ", StringComparison.Ordinal)) ncq++;
+                else
+                {
+                    if (i3 == 2)     msg += $" {crpt[i]}";
+                    else if (i <= 4) msg += " RR73";
+                    else             msg += $" {crpt[i - 5]}";
+                }
+                if (ncq <= 1 || !msg.StartsWith("CQ ", StringComparison.Ordinal))
+                    result.Add(msg);
+            }
+
+            // Optional CQ beacon (MoreCQs flag, bit 305)
+            if (BinToInt(bits, 305, 306) == 1 && ncq < 1)
+                result.Add($"CQ {foxCall}");
         }
 
-        // Optional CQ beacon
-        if (BinToInt(bits, 305, 306) == 1 && ncq < 1)
-            result.Add($"CQ {foxCall}");
+        // Digital signature — bits 306-325 (Fortran msgbits(307:326)), 20-bit OTP notp.
+        // Present for all message types; non-zero means the fox signed this transmission.
+        uint notp = 0;
+        for (int i = 306; i < 326; i++) { notp = (notp << 1) | (bits[i] ? 1u : 0u); }
+        if (notp != 0)
+            result.Add($"$VERIFY$ {foxCall} {notp:D6}");
 
         return result;
     }

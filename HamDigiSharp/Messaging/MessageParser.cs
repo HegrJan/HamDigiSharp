@@ -57,6 +57,11 @@ public static class MessageParser
 
     private static ParsedMessage ParseSuperFox(string raw, string[] words)
     {
+        // "$VERIFY$ FOXCALL SIGCODE" — digital-signature token from SuperFox decoder
+        if (words[0] == "$VERIFY$" && words.Length >= 3
+            && uint.TryParse(words[2], out uint sig))
+            return new SuperFoxSignatureMessage { Raw = raw, FoxCallsign = words[1], SignatureCode = sig };
+
         // "CQ FOXCALL GRID4"
         if (words[0] == "CQ" && words.Length >= 3)
             return new SuperFoxCqMessage { Raw = raw, FoxCallsign = words[1], Grid = words[2] };

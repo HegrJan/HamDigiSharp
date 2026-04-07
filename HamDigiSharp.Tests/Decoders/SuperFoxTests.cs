@@ -2,6 +2,7 @@ using System.Numerics;
 using FluentAssertions;
 using HamDigiSharp.Codecs;
 using HamDigiSharp.Decoders.SuperFox;
+using HamDigiSharp.Encoders;
 using HamDigiSharp.Models;
 using Xunit;
 
@@ -475,6 +476,103 @@ public class SuperFoxTests
     {
         var dec = new SuperFoxDecoder();
         dec.Mode.Should().Be(DigitalMode.SuperFox);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SfoxUnpack — digital signature ($VERIFY$ line)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    [Theory]
+    [InlineData(12345u,    "LZ2HVV", "012345")]
+    [InlineData(1u,        "OK1TE",  "000001")]
+    [InlineData(0xFFFFFu,  "W1AW",   "1048575")]
+    public void SfoxUnpack_SignedMessage_ReturnsVerifyLine(uint notp, string foxCall, string notpStr)
+    {
+        // Build a signed CQ message and unpack it at the digital level.
+        string message = $"CQ {foxCall} KN23";
+        byte[] xin = SuperFoxEncoder.PackMessage(message, notp);
+        var nat = (byte[])xin.Clone(); Array.Reverse(nat);
+
+        var dec  = new SuperFoxDecoder();
+        var msgs = dec.SfoxUnpack(nat);
+
+        msgs.Should().Contain(m => m == $"$VERIFY$ {foxCall} {notpStr}",
+            $"notp={notp} must produce '$VERIFY$ {foxCall} {notpStr}'");
+    }
+
+    [Fact]
+    public void SfoxUnpack_UnsignedMessage_NoVerifyLine()
+    {
+        byte[] xin = SuperFoxEncoder.PackMessage("CQ LZ2HVV KN23"); // notp=0
+        var nat = (byte[])xin.Clone(); Array.Reverse(nat);
+
+        var msgs = new SuperFoxDecoder().SfoxUnpack(nat);
+
+        msgs.Should().NotContain(m => m.StartsWith("$VERIFY$"),
+            "unsigned message must not produce a $VERIFY$ line");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SfoxUnpack — i3=3 CQ with optional free text
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void SfoxUnpack_CqWithFreeText_ReturnsBothLines()
+    {
+        byte[] xin = SuperFoxEncoder.PackMessage("CQ LZ2HVV KN23 ~ EXPEDITION");
+        var nat = (byte[])xin.Clone(); Array.Reverse(nat);
+
+        var msgs = new SuperFoxDecoder().SfoxUnpack(nat);
+
+        msgs.Should().Contain(m => m.Contains("LZ2HVV") && m.Contains("KN23"),
+            "CQ line must be present");
+        msgs.Should().Contain(m => m.Contains("EXPEDITION"),
+            "free text must be present");
+    }
+
+    [Fact]
+    public void SfoxUnpack_CqWithoutFreeText_OnlyCqLine()
+    {
+        // NqU1rks sentinel → free-text area not unpacked → exactly 1 result
+        byte[] xin = SuperFoxEncoder.PackMessage("CQ LZ2HVV KN23");
+        var nat = (byte[])xin.Clone(); Array.Reverse(nat);
+
+        var msgs = new SuperFoxDecoder().SfoxUnpack(nat);
+
+        msgs.Should().ContainSingle(m => m.StartsWith("CQ "),
+            "plain CQ with no free text must produce exactly one result line");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // SfoxUnpack — i3=2 hounds + free text
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void SfoxUnpack_I3_2_TextResponse_DecodesHoundsAndFreeText()
+    {
+        byte[] xin = SuperFoxEncoder.PackMessage("LZ2HVV W4ABC +01 G4XYZ ~ QSL QRZ");
+        var nat = (byte[])xin.Clone(); Array.Reverse(nat);
+
+        var msgs = new SuperFoxDecoder().SfoxUnpack(nat);
+
+        msgs.Should().Contain(m => m.Contains("W4ABC"),
+            "W4ABC with report +01 must appear");
+        msgs.Should().Contain(m => m.Contains("G4XYZ"),
+            "G4XYZ RR73 must appear");
+        msgs.Should().Contain(m => m.Contains("QSL") || m.Contains("QRZ"),
+            "free text must appear");
+    }
+
+    [Fact]
+    public void SfoxUnpack_I3_2_SignedTextResponse_ReturnsVerifyLine()
+    {
+        byte[] xin = SuperFoxEncoder.PackMessage("LZ2HVV W4ABC +01 ~ HELLO", 99999u);
+        var nat = (byte[])xin.Clone(); Array.Reverse(nat);
+
+        var msgs = new SuperFoxDecoder().SfoxUnpack(nat);
+
+        msgs.Should().Contain(m => m.StartsWith("$VERIFY$ LZ2HVV"),
+            "signed i3=2 message must also produce a $VERIFY$ line");
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

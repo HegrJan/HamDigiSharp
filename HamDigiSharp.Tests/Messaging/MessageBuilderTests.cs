@@ -447,4 +447,100 @@ public class MessageBuilderTests
         parsed.Hounds[1].IsRr73.Should().BeTrue();
         parsed.Hounds[2].ReportDb.Should().Be(-3);
     }
+
+    // ── SuperFoxTextResponse ──────────────────────────────────────────────────
+
+    [Fact]
+    public void SuperFoxTextResponse_SingleRr73Hound_ProducesCorrectFormat()
+    {
+        var result = MessageBuilder.SuperFoxTextResponse("LZ2HVV",
+            [new HoundEntry { Callsign = "W4ABC" }],
+            "QSL QRZ");
+
+        result.IsValid.Should().BeTrue();
+        result.Message.Should().Be("LZ2HVV W4ABC ~ QSL QRZ");
+    }
+
+    [Fact]
+    public void SuperFoxTextResponse_HoundWithReport_ProducesCorrectFormat()
+    {
+        var result = MessageBuilder.SuperFoxTextResponse("LZ2HVV",
+            [new HoundEntry { Callsign = "W4ABC", ReportDb = 3 }],
+            "TEST");
+
+        result.IsValid.Should().BeTrue();
+        result.Message.Should().Be("LZ2HVV W4ABC +03 ~ TEST");
+    }
+
+    [Fact]
+    public void SuperFoxTextResponse_NegativeReport_FormatsWithMinus()
+    {
+        var result = MessageBuilder.SuperFoxTextResponse("LZ2HVV",
+            [new HoundEntry { Callsign = "G4XYZ", ReportDb = -7 }],
+            "DE LZ2HVV");
+
+        result.IsValid.Should().BeTrue();
+        result.Message.Should().Be("LZ2HVV G4XYZ -07 ~ DE LZ2HVV");
+    }
+
+    [Fact]
+    public void SuperFoxTextResponse_EmptyFreeText_TildeOnly()
+    {
+        var result = MessageBuilder.SuperFoxTextResponse("LZ2HVV",
+            [new HoundEntry { Callsign = "W4ABC" }],
+            "");
+
+        result.IsValid.Should().BeTrue();
+        result.Message.Should().Be("LZ2HVV W4ABC ~");
+    }
+
+    [Fact]
+    public void SuperFoxTextResponse_MaxFreeText26Chars_Succeeds()
+    {
+        string text = new string('A', 26);
+        MessageBuilder.SuperFoxTextResponse("LZ2HVV",
+            [new HoundEntry { Callsign = "W4ABC" }],
+            text)
+            .IsValid.Should().BeTrue("26 chars is the maximum allowed");
+    }
+
+    [Fact]
+    public void SuperFoxTextResponse_TooManyHounds_ReturnsFail()
+    {
+        var hounds = Enumerable.Range(0, 5)
+            .Select(i => new HoundEntry { Callsign = $"W{i}AAA" })
+            .ToList();
+
+        MessageBuilder.SuperFoxTextResponse("LZ2HVV", hounds, "TEXT")
+            .IsValid.Should().BeFalse("at most 4 hounds are allowed for i3=2");
+    }
+
+    [Fact]
+    public void SuperFoxTextResponse_FreeTextTooLong_ReturnsFail()
+    {
+        MessageBuilder.SuperFoxTextResponse("LZ2HVV",
+            [new HoundEntry { Callsign = "W4ABC" }],
+            new string('A', 27))
+            .IsValid.Should().BeFalse("free text exceeds 26 characters");
+    }
+
+    [Fact]
+    public void SuperFoxTextResponse_InvalidCharInFreeText_ReturnsFail()
+    {
+        MessageBuilder.SuperFoxTextResponse("LZ2HVV",
+            [new HoundEntry { Callsign = "W4ABC" }],
+            "HELLO!")  // '!' is not in the base-42 alphabet
+            .IsValid.Should().BeFalse("'!' is not valid in the SuperFox base-42 alphabet");
+    }
+
+    [Fact]
+    public void SuperFoxTextResponse_AllBase42Chars_Succeeds()
+    {
+        // Base-42 alphabet: space + 0-9 + A-Z + + - . / ?
+        // Test that all special characters are accepted
+        MessageBuilder.SuperFoxTextResponse("LZ2HVV",
+            [new HoundEntry { Callsign = "W4ABC" }],
+            "0 +-./?")
+            .IsValid.Should().BeTrue("all base-42 special chars must be accepted");
+    }
 }

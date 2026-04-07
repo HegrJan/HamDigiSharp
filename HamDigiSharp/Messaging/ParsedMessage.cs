@@ -134,3 +134,26 @@ public sealed record SuperFoxResponseMessage : ParsedMessage
     /// </summary>
     public IReadOnlyList<HoundEntry> Hounds { get; init; } = [];
 }
+
+/// <summary>
+/// A SuperFox digital signature token decoded from a Fox transmission (message string
+/// <c>"$VERIFY$ FOXCALL SIGCODE"</c>).
+/// <para>
+/// Emitted alongside the normal hound/CQ messages when the Fox station includes a non-zero
+/// 20-bit one-time-pad (OTP) value in bits 306–325 of its SuperFox frame.
+/// The receiving application can verify the Fox's authenticity by comparing
+/// <see cref="SignatureCode"/> against the expected OTP for the current 30-second UTC period.
+/// </para>
+/// </summary>
+public sealed record SuperFoxSignatureMessage : ParsedMessage
+{
+    /// <summary>Fox station's callsign (extracted from the same frame as the signature).</summary>
+    public required string FoxCallsign { get; init; }
+
+    /// <summary>
+    /// 20-bit OTP signature code (1–1,048,575). Zero is never emitted.
+    /// In WSJT-X this value is derived from a 30-second-period key seed shared between
+    /// the fox operator and their network.
+    /// </summary>
+    public required uint SignatureCode { get; init; }
+}

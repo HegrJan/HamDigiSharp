@@ -212,6 +212,69 @@ public static class MessageBuilder
         return BuildResult.Ok(string.Join(" ", parts));
     }
 
+    /// <summary>
+    /// Builds a SuperFox Fox→Hound compound response frame with an accompanying free-text
+    /// message (i3=2 format): <c>"FOXCALL H1 [±NN] H2 [±NN] … ~ FREE TEXT"</c>.
+    /// <para>
+    /// The tilde (<c>~</c>) separator is the SuperFox i3=2 convention recognised by
+    /// <see cref="SuperFoxEncoder"/>. The resulting frame carries up to 4 hound call-signs
+    /// and up to 26 characters of free text in the same 15-second transmission.
+    /// </para>
+    /// </summary>
+    /// <param name="foxCallsign">Fox station's callsign.</param>
+    /// <param name="hounds">
+    /// Up to 4 hound entries. Reports must be in the range −18 to +12 dB.
+    /// </param>
+    /// <param name="freeText">
+    /// Up to 26 characters of free text using the base-42 alphabet
+    /// (<c>" 0-9 A-Z + - . / ?"</c>).
+    /// </param>
+    public static BuildResult SuperFoxTextResponse(
+        string foxCallsign,
+        IEnumerable<HoundEntry> hounds,
+        string freeText)
+    {
+        foxCallsign = Normalize(foxCallsign);
+        if (!IsValidCallsign(foxCallsign, out string foxErr))
+            return BuildResult.Fail($"Fox callsign: {foxErr}");
+
+        var houndList = hounds?.ToList() ?? [];
+        if (houndList.Count > 4)
+            return BuildResult.Fail($"SuperFox text-response supports at most 4 hounds (got {houndList.Count})");
+
+        freeText = Normalize(freeText);
+        if (freeText.Length > 26)
+            return BuildResult.Fail($"Free text exceeds 26 characters ({freeText.Length})");
+
+        const string Abc42 = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ+-./?";
+        foreach (char c in freeText)
+            if (!Abc42.Contains(c))
+                return BuildResult.Fail(
+                    $"Character '{c}' is not valid in SuperFox free text (base-42 alphabet: space, 0-9, A-Z, + - . / ?)");
+
+        var parts = new List<string> { foxCallsign };
+        for (int i = 0; i < houndList.Count; i++)
+        {
+            var h = houndList[i];
+            string cs = Normalize(h.Callsign);
+            if (!IsValidCallsign(cs, out string hErr))
+                return BuildResult.Fail($"Hound[{i}] callsign: {hErr}");
+            parts.Add(cs);
+            if (!h.IsRr73)
+            {
+                if (h.ReportDb < -18 || h.ReportDb > 12)
+                    return BuildResult.Fail(
+                        $"Hound[{i}] report {h.ReportDb} dB is outside the SuperFox range −18 to +12");
+                int r = h.ReportDb!.Value;
+                parts.Add(r >= 0 ? $"+{r:D2}" : $"-{Math.Abs(r):D2}");
+            }
+        }
+
+        parts.Add("~");
+        if (!string.IsNullOrEmpty(freeText)) parts.Add(freeText);
+        return BuildResult.Ok(string.Join(" ", parts));
+    }
+
     // ── Generic validation ────────────────────────────────────────────────────
 
     /// <summary>

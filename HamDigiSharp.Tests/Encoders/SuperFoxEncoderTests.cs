@@ -415,4 +415,186 @@ public class SuperFoxEncoderTests
         correct.Should().BeGreaterThanOrEqualTo(120,
             $"only {correct}/127 standard message symbols demodulated correctly");
     }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Digital signature (notp, bits 306-325)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void PackMessage_WithSignature_SignatureBitsCorrectInNaturalOrder()
+    {
+        // A non-zero notp must appear verbatim in bits 306-325 of the natural-order payload.
+        const uint notp = 0x12345u; // 0x12345 = 74565 (20 bits)
+        byte[] xin = SuperFoxEncoder.PackMessage("CQ LZ2HVV KN23", notp);
+
+        // Reverse to natural order (data first, CRC at end)
+        var nat = (byte[])xin.Clone();
+        Array.Reverse(nat);
+
+        // Extract bits 306-325 from natural-order msgbits (7 bits per symbol)
+        uint extracted = 0;
+        for (int i = 306; i < 326; i++)
+        {
+            int sym = i / 7;
+            int bit = 6 - (i % 7); // MSB-first within each symbol
+            extracted = (extracted << 1) | ((uint)((nat[sym] >> bit) & 1));
+        }
+
+        extracted.Should().Be(notp, "bits 306-325 must hold the verbatim notp value");
+    }
+
+    [Fact]
+    public void PackMessage_WithSignature_CrcDiffersFromNoSignature()
+    {
+        // The signature is included in the CRC payload; CRC must change.
+        byte[] xinNoSig = SuperFoxEncoder.PackMessage("LZ2HVV W4ABC +01");
+        byte[] xinSig   = SuperFoxEncoder.PackMessage("LZ2HVV W4ABC +01", 12345u);
+
+        var natNoSig = (byte[])xinNoSig.Clone(); Array.Reverse(natNoSig);
+        var natSig   = (byte[])xinSig.Clone();   Array.Reverse(natSig);
+
+        // CRC bytes are at natural[47..49]
+        bool crcDiffers = natNoSig[47] != natSig[47]
+                       || natNoSig[48] != natSig[48]
+                       || natNoSig[49] != natSig[49];
+        crcDiffers.Should().BeTrue("adding a signature must change the CRC");
+    }
+
+    [Fact]
+    public void PackMessage_ZeroSignature_IsIdenticalToNoSignatureOverload()
+    {
+        // notp=0 must behave identically to omitting the parameter.
+        byte[] xinDefault = SuperFoxEncoder.PackMessage("CQ LZ2HVV KN23");
+        byte[] xinZero    = SuperFoxEncoder.PackMessage("CQ LZ2HVV KN23", 0u);
+        xinDefault.Should().Equal(xinZero, "notp=0 must be equivalent to no signature");
+    }
+
+    [Fact]
+    public void PackMessage_SignatureAbove20Bits_IsMasked()
+    {
+        // Values > 0xFFFFF are silently masked to 20 bits.
+        byte[] xin20Bit = SuperFoxEncoder.PackMessage("CQ LZ2HVV KN23", 0x12345u);
+        byte[] xinExtra = SuperFoxEncoder.PackMessage("CQ LZ2HVV KN23", 0x112345u); // bit 20 set
+        xin20Bit.Should().Equal(xinExtra, "bits above 20 must be masked off");
+    }
+
+    [Fact]
+    public void Encode_WithSignature_PassesThroughFromOptions()
+    {
+        var enc = new SuperFoxEncoder();
+        byte[] xin1 = SuperFoxEncoder.PackMessage("CQ LZ2HVV KN23");
+        byte[] xin2 = SuperFoxEncoder.PackMessage("CQ LZ2HVV KN23", 99999u);
+
+        // Encoding with the option set must differ from encoding without
+        xin1.Should().NotEqual(xin2, "SuperFoxSignature option must affect the packed output");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // i3=2: free-text response (~ separator)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void PackMessage_TextResponse_I3EqualsTwo()
+    {
+        // i3 is in bits 326-328 of the natural-order payload → symbols 46..46 (bit 4..6) and 47 (bits 0..1)
+        // Actually i3 is at bits 326-328: symbol 326/7=46, bits 6-(326%7)=6-4=2 ... easier to unpack via SfoxUnpack
+        byte[] xin = SuperFoxEncoder.PackMessage("LZ2HVV W4ABC +01 G4XYZ ~ TEST TEXT");
+        var nat = (byte[])xin.Clone(); Array.Reverse(nat);
+
+        // Extract i3 from bits 326-328 (natural order)
+        int i3 = 0;
+        for (int i = 326; i < 329; i++)
+        {
+            int sym = i / 7;
+            int bit = 6 - (i % 7);
+            i3 = (i3 << 1) | ((nat[sym] >> bit) & 1);
+        }
+
+        i3.Should().Be(2, "tilde-separated message must produce i3=2");
+    }
+
+    [Fact]
+    public void PackMessage_TextResponse_UnpacksToFreeText()
+    {
+        byte[] xin = SuperFoxEncoder.PackMessage("LZ2HVV W4ABC +01 ~ HELLO WORLD");
+        var nat = (byte[])xin.Clone(); Array.Reverse(nat);
+
+        var dec = new SuperFoxDecoder();
+        var msgs = dec.SfoxUnpack(nat);
+
+        msgs.Should().Contain(m => m.Contains("HELLO WORLD"),
+            "free text part must appear in unpack output");
+    }
+
+    [Fact]
+    public void RoundTrip_TextResponse_DecodesHoundAndFreeText()
+    {
+        var enc = new SuperFoxEncoder();
+        var dec = new SuperFoxDecoder();
+
+        float[] audio = enc.Encode("LZ2HVV W4ABC +01 G4XYZ ~ QSL QRZ",
+            new EncoderOptions { FrequencyHz = 750.0, Amplitude = 0.9 });
+
+        var results = dec.Decode(audio, 700, 800, "000000");
+        var messages = results.Select(r => r.Message).ToList();
+
+        messages.Should().Contain(m => m.Contains("W4ABC"),
+            "hound with report must decode");
+        messages.Should().Contain(m => m.Contains("QSL") || m.Contains("QRZ"),
+            "free text must decode");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // i3=3: CQ with free text (tilde separator)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    [Fact]
+    public void PackMessage_CqWithFreeText_UnpacksBothCqLineAndText()
+    {
+        byte[] xin = SuperFoxEncoder.PackMessage("CQ LZ2HVV KN23 ~ EXPEDITION");
+        var nat = (byte[])xin.Clone(); Array.Reverse(nat);
+
+        var msgs = new SuperFoxDecoder().SfoxUnpack(nat);
+
+        msgs.Should().Contain(m => m.Contains("LZ2HVV") && m.Contains("KN23"),
+            "CQ line must be present");
+        msgs.Should().Contain(m => m.Contains("EXPEDITION"),
+            "free text must be present");
+    }
+
+    [Fact]
+    public void PackMessage_CqWithFreeText_I3EqualsThree()
+    {
+        // Tilde after CQ header must still produce i3=3, not i3=2.
+        byte[] xin = SuperFoxEncoder.PackMessage("CQ LZ2HVV KN23 ~ IOTA EU050");
+        var nat = (byte[])xin.Clone(); Array.Reverse(nat);
+
+        int i3 = 0;
+        for (int i = 326; i < 329; i++)
+        {
+            int sym = i / 7;
+            int bit = 6 - (i % 7);
+            i3 = (i3 << 1) | ((nat[sym] >> bit) & 1);
+        }
+
+        i3.Should().Be(3, "CQ + free text must produce i3=3, not i3=2");
+    }
+
+    [Fact]
+    public void RoundTrip_CqWithFreeText_DecodesCorrectly()
+    {
+        var enc = new SuperFoxEncoder();
+        var dec = new SuperFoxDecoder();
+
+        float[] audio = enc.Encode("CQ LZ2HVV KN23 ~ EXPEDITION",
+            new EncoderOptions { FrequencyHz = 750.0, Amplitude = 0.9 });
+
+        var results = dec.Decode(audio, 700, 800, "000000");
+        var messages = results.Select(r => r.Message).ToList();
+
+        messages.Should().Contain(m => m.Contains("LZ2HVV") && m.Contains("KN23"),
+            "CQ with free text must decode the CQ line");
+        messages.Should().Contain(m => m.Contains("EXPEDITION"),
+            "CQ with free text must decode the free text");
+    }
 }

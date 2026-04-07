@@ -343,4 +343,37 @@ public class MessageParserTests
         msg.Direction.Should().Be(MessageDirection.CQ);
         msg.From.Should().Be("W1AW");
     }
+
+    // ── SuperFox: digital-signature ($VERIFY$) ───────────────────────────────
+
+    [Theory]
+    [InlineData("$VERIFY$ LZ2HVV 012345", "LZ2HVV", 12345u)]
+    [InlineData("$VERIFY$ OK1TE 000001",   "OK1TE",   1u)]
+    [InlineData("$VERIFY$ W1AW 1048575",  "W1AW",   1048575u)]
+    public void Parse_SuperFox_VerifyMessage_ReturnsSuperFoxSignatureMessage(
+        string raw, string expectedFox, uint expectedSig)
+    {
+        var msg = MessageParser.Parse(raw, DigitalMode.SuperFox)
+            .Should().BeOfType<SuperFoxSignatureMessage>().Subject;
+        msg.FoxCallsign.Should().Be(expectedFox);
+        msg.SignatureCode.Should().Be(expectedSig);
+    }
+
+    [Fact]
+    public void Parse_SuperFox_VerifyMessage_ZeroCode_StillReturnsSuperFoxSignatureMessage()
+    {
+        // The decoder never emits notp=0, but the parser must not crash on it.
+        var msg = MessageParser.Parse("$VERIFY$ LZ2HVV 0", DigitalMode.SuperFox)
+            .Should().BeOfType<SuperFoxSignatureMessage>().Subject;
+        msg.FoxCallsign.Should().Be("LZ2HVV");
+        msg.SignatureCode.Should().Be(0u);
+    }
+
+    [Fact]
+    public void Parse_SuperFox_VerifyMessage_MissingCode_DoesNotReturnSignatureMessage()
+    {
+        // Only 2 words — no code → must not match $VERIFY$ pattern
+        MessageParser.Parse("$VERIFY$ LZ2HVV", DigitalMode.SuperFox)
+            .Should().NotBeOfType<SuperFoxSignatureMessage>();
+    }
 }

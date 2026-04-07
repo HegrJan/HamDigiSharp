@@ -45,6 +45,7 @@ float[] audio = enc.Encode("CQ W1AW FN42", DigitalMode.FT8, new EncoderOptions
 |---|---|---|---|
 | `FrequencyHz` | `double` | `1500.0` | Audio carrier / lowest tone frequency (Hz) |
 | `Amplitude` | `double` | `1.0` | Peak amplitude, clamped to 0 … 1 |
+| `SuperFoxSignature` | `uint` | `0` | 20-bit OTP digital signature for SuperFox transmissions (0 = no signature) |
 
 ---
 
@@ -110,12 +111,30 @@ callsign grid4                       e.g.  GB3NGI KN34
 
 ```
 CQ callsign grid4                    e.g.  CQ LZ2HVV KN23
+CQ callsign grid4 ~ free text        e.g.  CQ LZ2HVV KN23 ~ EXPEDITION  (i3=3 + text)
 
 callsign hound1 report1 [hound2 report2 …]
                                      e.g.  LZ2HVV W4ABC -03 VK3ABC RR73 K9AN +07
+callsign hound1 [report1] … ~ text   e.g.  LZ2HVV W4ABC -03 G4XYZ ~ QSL QRZ  (i3=2)
 ```
 
-Up to 9 hounds per frame (5 × RR73, 4 with reports). Reports: −18 … +12 dB.
+Up to 9 hounds per i3=0 frame (5 × RR73, 4 with reports). Reports: −18 … +12 dB.  
+The `~` separator selects the i3=2 free-text format: up to 4 hounds and 26 characters of
+base-42 free text (`space 0-9 A-Z + - . / ?`) in the same transmission.
+
+#### Digital signature (OTP)
+
+Pass a 20-bit one-time-pad code via `EncoderOptions.SuperFoxSignature` to sign transmissions.
+The decoder emits `"$VERIFY$ FOXCALL NNNNNN"` when a non-zero signature is decoded; the
+application compares the code against its own key for the current UTC period.
+
+```csharp
+enc.Encode("CQ LZ2HVV KN23", new EncoderOptions
+{
+    FrequencyHz      = 750.0,
+    SuperFoxSignature = 123456u,  // 20-bit OTP for this period
+});
+```
 
 ---
 
