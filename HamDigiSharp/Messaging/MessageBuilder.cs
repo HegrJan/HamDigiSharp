@@ -275,6 +275,114 @@ public static class MessageBuilder
         return BuildResult.Ok(string.Join(" ", parts));
     }
 
+    // ── EU VHF Contest (i3=5) ────────────────────────────────────────────────
+
+    /// <summary>
+    /// Builds a European VHF Contest (i3=5) message:
+    /// <c>"&lt;CALL1&gt; &lt;CALL2&gt; [R] EXCHANGE GRID6"</c>.
+    /// Both callsigns are hash-referenced in the bit frame; the full callsign must
+    /// be known to the decoder's hash table for resolution.
+    /// </summary>
+    /// <param name="call1">Callsign 1 (TO / addressed station). Angle brackets are added automatically.</param>
+    /// <param name="call2">Callsign 2 (FROM / transmitting station). Angle brackets are added automatically.</param>
+    /// <param name="exchange">
+    /// 6-digit EU VHF exchange number (520001–594095).
+    /// The first two digits encode the RST prefix (52–59); the last four encode the
+    /// serial number (0001–2047). Example: 590003 = RST 599, serial 0003.
+    /// </param>
+    /// <param name="grid6">6-character Maidenhead locator (e.g. "IO91NP").</param>
+    /// <param name="withR"><see langword="true"/> to include the R confirmation flag.</param>
+    public static BuildResult EuVhfContest(
+        string call1, string call2, int exchange, string grid6, bool withR = false)
+    {
+        call1 = ToHashedForm(call1);
+        call2 = ToHashedForm(call2);
+        grid6 = Normalize(grid6);
+
+        string inner1 = call1[1..^1];  // strip < >
+        string inner2 = call2[1..^1];
+
+        if (!IsValidCallsign(inner1, out string c1Err))
+            return BuildResult.Fail($"Call 1: {c1Err}");
+        if (!IsValidCallsign(inner2, out string c2Err))
+            return BuildResult.Fail($"Call 2: {c2Err}");
+        if (exchange < 520001 || exchange > 594095)
+            return BuildResult.Fail(
+                $"EU VHF exchange {exchange} is outside the valid range 520001–594095");
+        if (!IsValidGrid6(grid6))
+            return BuildResult.Fail(
+                $"Grid '{grid6}' is not a valid 6-character Maidenhead locator (e.g. IO91NP)");
+
+        string r = withR ? " R" : "";
+        return BuildResult.Ok($"{call1} {call2}{r} {exchange:D6} {grid6}");
+    }
+
+    private static string ToHashedForm(string? s)
+    {
+        s = (s ?? "").Trim().ToUpperInvariant();
+        if (s.StartsWith('<') && s.EndsWith('>')) return s;
+        return $"<{s}>";
+    }
+
+    internal static bool IsValidGrid6(string s)
+    {
+        if (s is not { Length: 6 }) return false;
+        return s[0] >= 'A' && s[0] <= 'R' && s[1] >= 'A' && s[1] <= 'R'
+            && char.IsDigit(s[2]) && char.IsDigit(s[3])
+            && s[4] >= 'A' && s[4] <= 'X' && s[5] >= 'A' && s[5] <= 'X';
+    }
+
+    // ── DXpedition (i3=0, n3=1) ──────────────────────────────────────────────
+
+    /// <summary>
+    /// Builds a DXpedition multi-QSO response (i3=0, n3=1):
+    /// <c>"CALLRR73 RR73; CALLREPORT &lt;DXCALL&gt; REPORT"</c>.
+    /// <para>
+    /// The DX/expedition station simultaneously confirms a QSO (RR73) to one hound
+    /// and sends a new signal report to a second hound. Its own callsign is
+    /// hash-referenced so that both common callsigns fit in the 77-bit frame.
+    /// </para>
+    /// <para>
+    /// Only even report values (−30, −28, … +28, +30) are representable in the 5-bit
+    /// field; odd inputs are rounded down to the next lower even value.
+    /// </para>
+    /// </summary>
+    /// <param name="callRr73">Callsign receiving the RR73 (QSO complete confirmation).</param>
+    /// <param name="callReport">Callsign receiving the signal report.</param>
+    /// <param name="dxCallsign">
+    /// DX station callsign to hash-reference (e.g. "KH1/KH7Z").
+    /// Angle brackets are added automatically if absent.
+    /// </param>
+    /// <param name="reportDb">Signal report in dB SNR (−30..+30).</param>
+    public static BuildResult DXpeditionResponse(
+        string callRr73, string callReport, string dxCallsign, int reportDb)
+    {
+        callRr73   = Normalize(callRr73);
+        callReport = Normalize(callReport);
+
+        // Strip angle brackets so we validate the bare callsign
+        dxCallsign = Normalize(dxCallsign);
+        if (dxCallsign.StartsWith('<') && dxCallsign.EndsWith('>'))
+            dxCallsign = dxCallsign[1..^1];
+
+        if (!IsValidCallsign(callRr73, out string c1Err))
+            return BuildResult.Fail($"CallRr73: {c1Err}");
+        if (!IsValidCallsign(callReport, out string c2Err))
+            return BuildResult.Fail($"CallReport: {c2Err}");
+        if (!IsValidCallsign(dxCallsign, out string c3Err))
+            return BuildResult.Fail($"DX callsign: {c3Err}");
+        if (reportDb < -30 || reportDb > 30)
+            return BuildResult.Fail(
+                $"Report {reportDb} dB is outside the valid range −30..+30");
+
+        // Round to the nearest representable even value: n5 = (irpt+30)/2, decoded = 2*n5-30
+        int n5     = (reportDb + 30) / 2;
+        int actual = 2 * n5 - 30;
+        string rptStr = actual >= 0 ? $"+{actual:D2}" : $"-{Math.Abs(actual):D2}";
+
+        return BuildResult.Ok($"{callRr73} RR73; {callReport} <{dxCallsign}> {rptStr}");
+    }
+
     // ── Generic validation ────────────────────────────────────────────────────
 
     /// <summary>

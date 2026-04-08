@@ -248,4 +248,142 @@ public class MessagePack77Tests
         Crc14.Check(codeword.AsSpan(0, 91)).Should().BeTrue(
             $"CRC-14 of first 91 bits must be valid for \"{message}\"");
     }
+
+    // ── EU VHF Contest encoder (i3=5) ────────────────────────────────────────
+
+    [Fact]
+    public void TryPack77_EuVhf_NoR_RoundTrip()
+    {
+        // "<PA3XYZ/P> <G4ABC/P> 590003 IO91NP" — no R
+        const string message = "<PA3XYZ/P> <G4ABC/P> 590003 IO91NP";
+        var c77 = new bool[77];
+        bool packed = MessagePack77.TryPack77(message, c77);
+        packed.Should().BeTrue($"TryPack77 must succeed for \"{message}\"");
+
+        var packer = new MessagePacker();
+        packer.RegisterCallsign("PA3XYZ/P");
+        packer.RegisterCallsign("G4ABC/P");
+
+        string decoded = packer.Unpack77(c77, out bool ok);
+        ok.Should().BeTrue("must decode successfully");
+        decoded.Should().Be(message, "round-trip must reproduce the original message");
+    }
+
+    [Fact]
+    public void TryPack77_EuVhf_WithR_RoundTrip()
+    {
+        // "<PA3XYZ/P> <G4ABC/P> R 590003 IO91NP" — with R
+        const string message = "<PA3XYZ/P> <G4ABC/P> R 590003 IO91NP";
+        var c77 = new bool[77];
+        bool packed = MessagePack77.TryPack77(message, c77);
+        packed.Should().BeTrue($"TryPack77 must succeed for \"{message}\"");
+
+        var packer = new MessagePacker();
+        packer.RegisterCallsign("PA3XYZ/P");
+        packer.RegisterCallsign("G4ABC/P");
+
+        string decoded = packer.Unpack77(c77, out bool ok);
+        ok.Should().BeTrue("must decode successfully");
+        decoded.Should().Be(message, "round-trip must reproduce the original message");
+    }
+
+    [Theory]
+    [InlineData("<W1AW> <K9AN> 520000 JN89")]  // exchange too low
+    [InlineData("<W1AW> <K9AN> 594096 JN89")]  // exchange too high
+    [InlineData("<W1AW> <K9AN> 999999 JN89")]  // exchange way out of range
+    public void TryPack77_EuVhf_InvalidExchange_ReturnsFalse(string message)
+    {
+        var c77 = new bool[77];
+        MessagePack77.TryPack77(message, c77).Should().BeFalse(
+            $"exchange out of valid range must not pack: \"{message}\"");
+    }
+
+    [Theory]
+    [InlineData("<W1AW> <K9AN> 590003 ZZZZZZ")]  // Z > X in subsquare
+    [InlineData("<W1AW> <K9AN> 590003 IO91N")]    // too short
+    [InlineData("<W1AW> <K9AN> 590003 IO91NPQ")]  // too long
+    [InlineData("<W1AW> <K9AN> 590003 1O91NP")]   // starts with digit
+    public void TryPack77_EuVhf_InvalidGrid_ReturnsFalse(string message)
+    {
+        var c77 = new bool[77];
+        MessagePack77.TryPack77(message, c77).Should().BeFalse(
+            $"invalid grid6 must not pack: \"{message}\"");
+    }
+
+    // ── DXpedition encoder (i3=0, n3=1) ─────────────────────────────────────
+
+    [Fact]
+    public void TryPack77_DXped_EvenReport_FullRoundTrip()
+    {
+        // Pack message, register DX callsign, decode — all fields must survive.
+        const string message = "K1ABC RR73; W9XYZ <KH1/KH7Z> -12";
+        var c77 = new bool[77];
+        bool packed = MessagePack77.TryPack77(message, c77);
+        packed.Should().BeTrue("DXpedition format must pack");
+
+        var packer = new MessagePacker();
+        packer.RegisterCallsign("KH1/KH7Z");  // register DX so hash resolves
+
+        string decoded = packer.Unpack77(c77, out bool ok);
+        ok.Should().BeTrue("must decode successfully");
+        decoded.Should().Be(message, "round-trip must reproduce the original message");
+    }
+
+    [Fact]
+    public void TryPack77_DXped_PositiveReport_FullRoundTrip()
+    {
+        const string message = "DL1ABC RR73; VK2ZD <P29KPH> +06";
+        var c77 = new bool[77];
+        bool packed = MessagePack77.TryPack77(message, c77);
+        packed.Should().BeTrue("DXpedition with positive report must pack");
+
+        var packer = new MessagePacker();
+        packer.RegisterCallsign("P29KPH");
+
+        string decoded = packer.Unpack77(c77, out bool ok);
+        ok.Should().BeTrue("must decode successfully");
+        decoded.Should().Be(message, "round-trip must reproduce the original message");
+    }
+
+    [Fact]
+    public void TryPack77_DXped_UnknownHash_StillPacksButDecodesWithEllipsis()
+    {
+        // When the DX callsign is NOT registered the decoder returns <...>.
+        const string message = "K1ABC RR73; W9XYZ <KH1/KH7Z> -12";
+        var c77 = new bool[77];
+        MessagePack77.TryPack77(message, c77).Should().BeTrue();
+
+        // Decode without registering KH1/KH7Z
+        string decoded = new MessagePacker().Unpack77(c77, out bool ok);
+        ok.Should().BeTrue("decode still succeeds even when hash is unknown");
+        decoded.Should().StartWith("K1ABC RR73; W9XYZ <");
+        decoded.Should().EndWith("> -12", "report must still decode correctly");
+    }
+
+    [Fact]
+    public void TryPack77_DXped_OddReport_RoundsDownToEven()
+    {
+        // -13 → n5 = (-13+30)/2 = 8, decoded = 2*8-30 = -14
+        const string message = "K1ABC RR73; W9XYZ <KH1/KH7Z> -13";
+        var c77 = new bool[77];
+        MessagePack77.TryPack77(message, c77).Should().BeTrue("odd report must still pack");
+
+        var packer = new MessagePacker();
+        packer.RegisterCallsign("KH1/KH7Z");
+        string decoded = packer.Unpack77(c77, out bool ok);
+        ok.Should().BeTrue();
+        // Odd -13 rounds down to -14
+        decoded.Should().Be("K1ABC RR73; W9XYZ <KH1/KH7Z> -14",
+            "odd report must round down to nearest representable even value");
+    }
+
+    [Theory]
+    [InlineData("K1ABC RR73; W9XYZ <...> -12")]     // unknown-hash placeholder cannot be re-encoded
+    [InlineData("K1ABC RR73; W9XYZ <KH1/KH7Z> NOTNUM")]  // non-numeric report
+    public void TryPack77_DXped_InvalidInputs_ReturnFalse(string message)
+    {
+        var c77 = new bool[77];
+        MessagePack77.TryPack77(message, c77).Should().BeFalse(
+            $"invalid DXpedition message must not pack: \"{message}\"");
+    }
 }

@@ -135,6 +135,74 @@ public sealed record SuperFoxResponseMessage : ParsedMessage
     public IReadOnlyList<HoundEntry> Hounds { get; init; } = [];
 }
 
+// ── EU VHF Contest ───────────────────────────────────────────────────────────
+
+/// <summary>
+/// A European VHF Contest (i3=5) message decoded from an FT8/FT4/FT2 frame.
+/// Both callsigns are always hash-referenced (shown with angle brackets).
+/// Example: <c>"&lt;PA3XYZ/P&gt; &lt;G4ABC/P&gt; R 590003 IO91NP"</c>.
+/// </summary>
+public sealed record EuVhfContestMessage : ParsedMessage
+{
+    /// <summary>Callsign 1 (TO / addressed station). E.g. "&lt;PA3XYZ/P&gt;" or "&lt;...&gt;" if hash unknown.</summary>
+    public required string Call1 { get; init; }
+
+    /// <summary>Callsign 2 (FROM / transmitting station). E.g. "&lt;G4ABC/P&gt;".</summary>
+    public required string Call2 { get; init; }
+
+    /// <summary><see langword="true"/> when the 'R' confirmation flag is set in the frame.</summary>
+    public bool HasR { get; init; }
+
+    /// <summary>
+    /// Full 6-digit exchange string, e.g. "590003".
+    /// The first two digits encode the RST prefix (52–59) and the last four encode the
+    /// serial number (0001–2047 zero-padded). The full RST is conventionally the prefix
+    /// appended with '9', e.g. "599".
+    /// </summary>
+    public required string Exchange { get; init; }
+
+    /// <summary>6-character Maidenhead grid locator, e.g. "IO91NP".</summary>
+    public required string Grid { get; init; }
+
+    /// <summary>RST prefix (52–59).</summary>
+    public int? RstPrefix => Exchange.Length >= 2 && int.TryParse(Exchange[..2], out int v) ? v : null;
+
+    /// <summary>Contest serial number (0–2047).</summary>
+    public int? SerialNumber => Exchange.Length >= 6 && int.TryParse(Exchange[2..], out int v) ? v : null;
+}
+
+// ── DXpedition messages (i3=0, n3=1) ─────────────────────────────────────────
+
+/// <summary>
+/// A DXpedition multi-QSO response (i3=0, n3=1): the DX station simultaneously
+/// sends RR73 to one hound (QSO complete) and a signal report to a second hound.
+/// The DX station's own callsign is always hash-referenced.
+/// Example: <c>"K1ABC RR73; W9XYZ &lt;KH1/KH7Z&gt; -12"</c>.
+/// </summary>
+public sealed record DXpeditionMessage : ParsedMessage
+{
+    /// <summary>Callsign receiving the RR73 (QSO complete confirmation).</summary>
+    public required string CallRr73 { get; init; }
+
+    /// <summary>Callsign receiving the signal report.</summary>
+    public required string CallReport { get; init; }
+
+    /// <summary>
+    /// Hashed DX/expedition callsign, e.g. <c>"&lt;KH1/KH7Z&gt;"</c> or
+    /// <c>"&lt;...&gt;"</c> when the hash is not in the receiver's lookup table.
+    /// </summary>
+    public required string DxCallsign { get; init; }
+
+    /// <summary>
+    /// Signal report sent to <see cref="CallReport"/>, in dB SNR.
+    /// Only even values in the range −30..+30 can be represented in the 5-bit field;
+    /// the decoder always emits an even value.
+    /// </summary>
+    public int ReportDb { get; init; }
+}
+
+// ── SuperFox messages ─────────────────────────────────────────────────────────
+
 /// <summary>
 /// A SuperFox digital signature token decoded from a Fox transmission (message string
 /// <c>"$VERIFY$ FOXCALL SIGCODE"</c>).

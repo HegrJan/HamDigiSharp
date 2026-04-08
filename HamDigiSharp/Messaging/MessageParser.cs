@@ -108,6 +108,30 @@ public static class MessageParser
     {
         string first = words[0];
 
+        // DXpedition (i3=0, n3=1): "CALL1 RR73; CALL2 <DX> REPORT"
+        // Must be detected before EU VHF (5-word check) and before general callsign pair matching,
+        // because "RR73;" with the semicolon would otherwise fail IsCallsignLike.
+        if (words.Length == 5
+            && words[1] == "RR73;"
+            && IsCallsignLike(words[0])
+            && IsCallsignLike(words[2])
+            && IsHashedCall(words[3])
+            && int.TryParse(words[4], out int dxRpt))
+        {
+            return new DXpeditionMessage
+            {
+                Raw        = raw,
+                CallRr73   = words[0],
+                CallReport = words[2],
+                DxCallsign = words[3],
+                ReportDb   = dxRpt,
+            };
+        }
+
+        // EU VHF Contest (i3=5): both callsigns are angle-bracket hash references
+        if ((words.Length is 4 or 5) && IsHashedCall(words[0]) && IsHashedCall(words[1]))
+            return ParseEuVhf(raw, words);
+
         // CQ / QRZ / DE — initiator role
         if (first is "CQ" or "QRZ" or "DE")
         {
@@ -179,6 +203,51 @@ public static class MessageParser
         }
 
         return new FreeTextMessage { Raw = raw, Text = string.Join(" ", words) };
+    }
+
+    // ── EU VHF Contest ────────────────────────────────────────────────────────
+
+    private static bool IsHashedCall(string s) =>
+        s.Length >= 3 && s[0] == '<' && s[^1] == '>';
+
+    private static bool IsGrid6(string s)
+    {
+        if (s.Length != 6) return false;
+        return s[0] >= 'A' && s[0] <= 'R' && s[1] >= 'A' && s[1] <= 'R'
+            && char.IsDigit(s[2]) && char.IsDigit(s[3])
+            && s[4] >= 'A' && s[4] <= 'X' && s[5] >= 'A' && s[5] <= 'X';
+    }
+
+    private static ParsedMessage ParseEuVhf(string raw, string[] words)
+    {
+        // 4 words: <C1> <C2> EXCH GRID6
+        // 5 words: <C1> <C2> R EXCH GRID6
+        bool hasR = words.Length == 5 && words[2] == "R";
+        if (words.Length == 5 && !hasR)
+            return new FreeTextMessage { Raw = raw, Text = string.Join(" ", words) };
+
+        int exchIdx = hasR ? 3 : 2;
+        int gridIdx = hasR ? 4 : 3;
+        if (gridIdx >= words.Length)
+            return new FreeTextMessage { Raw = raw, Text = string.Join(" ", words) };
+
+        string exchStr = words[exchIdx];
+        if (exchStr.Length != 6 || !long.TryParse(exchStr, out long nx)
+            || nx < 520001 || nx > 594095)
+            return new FreeTextMessage { Raw = raw, Text = string.Join(" ", words) };
+
+        if (!IsGrid6(words[gridIdx]))
+            return new FreeTextMessage { Raw = raw, Text = string.Join(" ", words) };
+
+        return new EuVhfContestMessage
+        {
+            Raw      = raw,
+            Call1    = words[0],
+            Call2    = words[1],
+            HasR     = hasR,
+            Exchange = exchStr,
+            Grid     = words[gridIdx],
+        };
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

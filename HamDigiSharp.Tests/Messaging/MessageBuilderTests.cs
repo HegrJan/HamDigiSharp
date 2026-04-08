@@ -543,4 +543,158 @@ public class MessageBuilderTests
             "0 +-./?")
             .IsValid.Should().BeTrue("all base-42 special chars must be accepted");
     }
+
+    // ── EU VHF Contest (i3=5) ─────────────────────────────────────────────────
+
+    [Fact]
+    public void EuVhfContest_ValidInputs_ReturnsExpectedMessage()
+    {
+        var result = MessageBuilder.EuVhfContest("PA3XYZ/P", "G4ABC/P", 590003, "IO91NP");
+        result.IsValid.Should().BeTrue();
+        result.Message.Should().Be("<PA3XYZ/P> <G4ABC/P> 590003 IO91NP");
+    }
+
+    [Fact]
+    public void EuVhfContest_WithR_IncludesR()
+    {
+        var result = MessageBuilder.EuVhfContest("PA3XYZ/P", "G4ABC/P", 590003, "IO91NP", withR: true);
+        result.IsValid.Should().BeTrue();
+        result.Message.Should().Be("<PA3XYZ/P> <G4ABC/P> R 590003 IO91NP");
+    }
+
+    [Fact]
+    public void EuVhfContest_WrapsCallsignsInBrackets()
+    {
+        // Calls passed without angle brackets are wrapped automatically
+        var result = MessageBuilder.EuVhfContest("W1AW", "K9AN", 520001, "JN89AB");
+        result.IsValid.Should().BeTrue();
+        result.Message.Should().StartWith("<W1AW> <K9AN>");
+    }
+
+    [Fact]
+    public void EuVhfContest_AlreadyWrapped_NotDoubleWrapped()
+    {
+        // Calls already in angle brackets must not be double-wrapped
+        var result = MessageBuilder.EuVhfContest("<W1AW>", "<K9AN>", 520001, "JN89AB");
+        result.IsValid.Should().BeTrue();
+        result.Message.Should().StartWith("<W1AW> <K9AN>");
+        result.Message.Should().NotContain("<<");
+    }
+
+    [Theory]
+    [InlineData(520000)]  // one below minimum
+    [InlineData(594096)]  // one above maximum
+    [InlineData(0)]
+    [InlineData(999999)]
+    public void EuVhfContest_ExchangeOutOfRange_ReturnsFail(int exchange)
+    {
+        MessageBuilder.EuVhfContest("W1AW", "K9AN", exchange, "IO91NP")
+            .IsValid.Should().BeFalse(
+                $"exchange {exchange} is outside 520001–594095");
+    }
+
+    [Theory]
+    [InlineData("IO91N")]    // too short (5 chars)
+    [InlineData("IO91NPQ")]  // too long (7 chars)
+    [InlineData("1O91NP")]   // starts with digit
+    [InlineData("IO91ZZ")]   // subsquare Z > X
+    [InlineData("SO91NP")]   // field S > R
+    public void EuVhfContest_InvalidGrid6_ReturnsFail(string grid6)
+    {
+        MessageBuilder.EuVhfContest("W1AW", "K9AN", 590003, grid6)
+            .IsValid.Should().BeFalse($"grid '{grid6}' is not valid");
+    }
+
+    [Fact]
+    public void EuVhfContest_LowerCaseInputs_Normalised()
+    {
+        var result = MessageBuilder.EuVhfContest("pa3xyz/p", "g4abc/p", 590003, "io91np");
+        result.IsValid.Should().BeTrue("lower-case inputs must be normalised");
+        result.Message.Should().Be("<PA3XYZ/P> <G4ABC/P> 590003 IO91NP");
+    }
+
+    [Fact]
+    public void EuVhfContest_RoundTrip_BuildThenParse_MatchesFields()
+    {
+        string built = MessageBuilder.EuVhfContest("PA3XYZ/P", "G4ABC/P", 590003, "IO91NP", withR: true).Unwrap();
+        var parsed = MessageParser.Parse(built)
+            .Should().BeOfType<EuVhfContestMessage>().Subject;
+
+        parsed.Call1.Should().Be("<PA3XYZ/P>");
+        parsed.Call2.Should().Be("<G4ABC/P>");
+        parsed.HasR.Should().BeTrue();
+        parsed.Exchange.Should().Be("590003");
+        parsed.Grid.Should().Be("IO91NP");
+    }
+
+    // ── DXpedition builder (i3=0, n3=1) ─────────────────────────────────────
+
+    [Theory]
+    [InlineData("K1ABC",  "W9XYZ",  "KH1/KH7Z", -12, "K1ABC RR73; W9XYZ <KH1/KH7Z> -12")]
+    [InlineData("DL1ABC", "VK2ZD",  "P29KPH",   +6,  "DL1ABC RR73; VK2ZD <P29KPH> +06")]
+    [InlineData("OK1TE",  "W1AW",   "VP8ABC",    0,  "OK1TE RR73; W1AW <VP8ABC> +00")]
+    [InlineData("K1ABC",  "W9XYZ",  "KH1/KH7Z", -30, "K1ABC RR73; W9XYZ <KH1/KH7Z> -30")]
+    [InlineData("K1ABC",  "W9XYZ",  "KH1/KH7Z", +30, "K1ABC RR73; W9XYZ <KH1/KH7Z> +30")]
+    public void DXpeditionResponse_ValidInputs_ReturnsExpectedMessage(
+        string callRr73, string callReport, string dxCall, int report, string expected)
+    {
+        var result = MessageBuilder.DXpeditionResponse(callRr73, callReport, dxCall, report);
+        result.IsValid.Should().BeTrue($"must be valid for report={report}");
+        result.Message.Should().Be(expected);
+    }
+
+    [Fact]
+    public void DXpeditionResponse_OddReport_RoundsDownToEven()
+    {
+        // -13 → n5=8 → decoded=-14; the builder emits the representable value
+        var result = MessageBuilder.DXpeditionResponse("K1ABC", "W9XYZ", "KH1/KH7Z", -13);
+        result.IsValid.Should().BeTrue();
+        result.Message.Should().Be("K1ABC RR73; W9XYZ <KH1/KH7Z> -14",
+            "odd report is rounded down to the nearest representable even value");
+    }
+
+    [Fact]
+    public void DXpeditionResponse_AngleBracketInput_StrippedBeforeOutput()
+    {
+        // Caller passes "<KH1/KH7Z>"; builder should add its own brackets
+        var result = MessageBuilder.DXpeditionResponse("K1ABC", "W9XYZ", "<KH1/KH7Z>", -12);
+        result.IsValid.Should().BeTrue();
+        result.Message.Should().Be("K1ABC RR73; W9XYZ <KH1/KH7Z> -12");
+    }
+
+    [Fact]
+    public void DXpeditionResponse_LowerCaseInputs_Normalised()
+    {
+        var result = MessageBuilder.DXpeditionResponse("k1abc", "w9xyz", "kh1/kh7z", -12);
+        result.IsValid.Should().BeTrue();
+        result.Message.Should().Be("K1ABC RR73; W9XYZ <KH1/KH7Z> -12");
+    }
+
+    [Theory]
+    [InlineData("",      "W9XYZ", "KH1/KH7Z", -12)]   // empty callRr73
+    [InlineData("K1ABC", "",      "KH1/KH7Z", -12)]   // empty callReport
+    [InlineData("K1ABC", "W9XYZ", "",          -12)]   // empty DX callsign
+    [InlineData("K1ABC", "W9XYZ", "KH1/KH7Z", -31)]   // report below -30
+    [InlineData("K1ABC", "W9XYZ", "KH1/KH7Z",  31)]   // report above +30
+    [InlineData("NODIG", "W9XYZ", "KH1/KH7Z", -12)]   // invalid callsign (no area digit)
+    public void DXpeditionResponse_InvalidInputs_ReturnsFail(
+        string callRr73, string callReport, string dxCall, int report)
+    {
+        var result = MessageBuilder.DXpeditionResponse(callRr73, callReport, dxCall, report);
+        result.IsValid.Should().BeFalse($"invalid inputs must fail");
+        result.Error.Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
+    public void DXpeditionResponse_RoundTrip_BuildThenParse_MatchesFields()
+    {
+        string built = MessageBuilder.DXpeditionResponse("K1ABC", "W9XYZ", "KH1/KH7Z", -12).Unwrap();
+        var parsed = MessageParser.Parse(built)
+            .Should().BeOfType<DXpeditionMessage>().Subject;
+
+        parsed.CallRr73.Should().Be("K1ABC");
+        parsed.CallReport.Should().Be("W9XYZ");
+        parsed.DxCallsign.Should().Be("<KH1/KH7Z>");
+        parsed.ReportDb.Should().Be(-12);
+    }
 }

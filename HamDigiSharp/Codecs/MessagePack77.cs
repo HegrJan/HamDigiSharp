@@ -25,10 +25,19 @@ public static class MessagePack77
         if (c77.Length < 77) throw new ArgumentException("c77 must be at least 77 elements.");
         Array.Clear(c77, 0, 77);
 
-        string msg   = message.Trim().ToUpperInvariant();
+        string msg    = message.Trim().ToUpperInvariant();
         string[] words = msg.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        if (words.Length < 2 || words.Length > 4) return false;
+        if (words.Length == 0) return false;
 
+        // EU VHF Contest (i3=5): both calls are angle-bracket hash references
+        if (words.Length is 4 or 5 && words[0].StartsWith('<') && words[1].StartsWith('<'))
+            return TryPackEuVhf(words, c77);
+
+        // DXpedition (i3=0, n3=1): "CALL1 RR73; CALL2 <DX> REPORT" — 5 words, sentinel is "RR73;"
+        if (words.Length == 5 && words[1] == "RR73;" && words[3].StartsWith('<'))
+            return TryPackDxped(words, c77);
+
+        if (words.Length < 2 || words.Length > 4) return false;
         return TryPackType1(words, c77);
     }
 
@@ -229,5 +238,114 @@ public static class MessagePack77
     {
         for (int i = nBits - 1; i >= 0; i--)
             c77[pos++] = ((value >> i) & 1) == 1;
+    }
+
+    // ── DXpedition (i3=0, n3=1) ─────────────────────────────────────────────
+
+    /// <summary>
+    /// Packs a DXpedition multi-QSO response: <c>"CALL1 RR73; CALL2 &lt;DXCALL&gt; REPORT"</c>.
+    /// Bit layout: n28a(28) + n28b(28) + n10(10) + n5(5) + n3=1(3) + i3=0(3) = 77.
+    /// </summary>
+    private static bool TryPackDxped(string[] words, bool[] c77)
+    {
+        // words[0]=CALL1  words[1]="RR73;"  words[2]=CALL2  words[3]=<DXCALL>  words[4]=REPORT
+        if (!int.TryParse(words[4], out int irpt)) return false;
+
+        int n28a = Pack28(words[0]);
+        int n28b = Pack28(words[2]);
+        if (n28a <= 2 || n28b <= 2) return false; // must be real callsigns, not DE/QRZ/CQ
+
+        // Strip angle brackets to get the raw DX callsign for hashing
+        string dxRaw = words[3][1..^1];
+        if (dxRaw.Length == 0 || dxRaw == "...") return false; // unknown hash — can't encode
+
+        // n5 is a 5-bit value (0..31) encoding the report: irpt = 2*n5 - 30
+        int n5 = Math.Clamp((irpt + 30) / 2, 0, 31);
+
+        int n10 = IHashCall(dxRaw, 10);
+        const int n3 = 1;
+        const int i3 = 0;
+
+        int pos = 0;
+        SetBits(n28a, 28, c77, ref pos);
+        SetBits(n28b, 28, c77, ref pos);
+        SetBits(n10,  10, c77, ref pos);
+        SetBits(n5,    5, c77, ref pos);
+        SetBits(n3,    3, c77, ref pos);
+        SetBits(i3,    3, c77, ref pos);
+        return true;
+    }
+
+    // ── EU VHF Contest (i3=5) ────────────────────────────────────────────────
+
+    private static bool TryPackEuVhf(string[] words, bool[] c77)
+    {
+        // words: <C1> <C2> [R] EXCHANGE GRID6
+        bool hasR = words.Length == 5 && words[2] == "R";
+        if (words.Length == 5 && !hasR) return false;
+
+        int exchIdx = hasR ? 3 : 2;
+        int gridIdx = hasR ? 4 : 3;
+
+        if (!long.TryParse(words[exchIdx], out long nx) || nx < 520001 || nx > 594095)
+            return false;
+        if (!TryEncodeGrid6(words[gridIdx], out int igrid6)) return false;
+
+        // Extract callsigns from angle brackets
+        string raw1 = words[0][1..^1];  // strip < >
+        string raw2 = words[1][1..^1];
+        if (raw1.Length == 0 || raw1 == "..." || raw2.Length == 0 || raw2 == "...") return false;
+
+        int irpt    = (int)(nx / 10000 - 52);  // 0..7
+        int iserial = (int)(nx % 10000);
+        if (iserial > 2047) iserial = 2047;
+        int ir = hasR ? 1 : 0;
+
+        int n12 = IHashCall(raw1, 12);
+        int n22 = IHashCall(raw2, 22);
+        const int i3 = 5;
+
+        int pos = 0;
+        SetBits(n12,     12, c77, ref pos);
+        SetBits(n22,     22, c77, ref pos);
+        SetBits(ir,       1, c77, ref pos);
+        SetBits(irpt,     3, c77, ref pos);
+        SetBits(iserial, 11, c77, ref pos);
+        SetBits(igrid6,  25, c77, ref pos);
+        SetBits(i3,       3, c77, ref pos);
+        return true;
+    }
+
+    private static bool TryEncodeGrid6(string grid6, out int igrid6)
+    {
+        igrid6 = 0;
+        if (grid6.Length != 6) return false;
+        char c0 = grid6[0], c1 = grid6[1], c2 = grid6[2], c3 = grid6[3], c4 = grid6[4], c5 = grid6[5];
+        if (c0 < 'A' || c0 > 'R' || c1 < 'A' || c1 > 'R') return false;
+        if (!char.IsDigit(c2) || !char.IsDigit(c3)) return false;
+        if (c4 < 'A' || c4 > 'X' || c5 < 'A' || c5 > 'X') return false;
+        igrid6 = (c0 - 'A') * (18 * 10 * 10 * 24 * 24)
+               + (c1 - 'A') * (10 * 10 * 24 * 24)
+               + (c2 - '0') * (10 * 24 * 24)
+               + (c3 - '0') * (24 * 24)
+               + (c4 - 'A') * 24
+               + (c5 - 'A');
+        return igrid6 <= 18662399;
+    }
+
+    // ihashcall(call, m) — matches WSJT-X Fortran exactly
+    private static int IHashCall(string call, int m)
+    {
+        const string c38 = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ/";
+        long n8 = 0;
+        for (int i = 0; i < 11; i++)
+        {
+            char ch = i < call.Length ? call[i] : ' ';
+            int j = c38.IndexOf(ch);
+            if (j < 0) j = 0;
+            n8 = 38 * n8 + j;
+        }
+        ulong product = unchecked((ulong)(47055833459L * n8));
+        return (int)(product >> (64 - m));
     }
 }

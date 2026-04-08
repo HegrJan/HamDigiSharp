@@ -376,4 +376,146 @@ public class MessageParserTests
         MessageParser.Parse("$VERIFY$ LZ2HVV", DigitalMode.SuperFox)
             .Should().NotBeOfType<SuperFoxSignatureMessage>();
     }
+
+    // ── EU VHF Contest (i3=5) ────────────────────────────────────────────────
+
+    [Fact]
+    public void Parse_EuVhf_NoR_ReturnsEuVhfContestMessage()
+    {
+        var msg = MessageParser.Parse("<PA3XYZ/P> <G4ABC/P> 590003 IO91NP")
+            .Should().BeOfType<EuVhfContestMessage>().Subject;
+
+        msg.Call1.Should().Be("<PA3XYZ/P>");
+        msg.Call2.Should().Be("<G4ABC/P>");
+        msg.HasR.Should().BeFalse();
+        msg.Exchange.Should().Be("590003");
+        msg.Grid.Should().Be("IO91NP");
+    }
+
+    [Fact]
+    public void Parse_EuVhf_WithR_ReturnsEuVhfContestMessage()
+    {
+        var msg = MessageParser.Parse("<PA3XYZ/P> <G4ABC/P> R 590003 IO91NP")
+            .Should().BeOfType<EuVhfContestMessage>().Subject;
+
+        msg.Call1.Should().Be("<PA3XYZ/P>");
+        msg.Call2.Should().Be("<G4ABC/P>");
+        msg.HasR.Should().BeTrue();
+        msg.Exchange.Should().Be("590003");
+        msg.Grid.Should().Be("IO91NP");
+    }
+
+    [Fact]
+    public void Parse_EuVhf_UnknownHash_StillParses()
+    {
+        // The decoder emits <...> when hash cannot be resolved — parser must handle it
+        var msg = MessageParser.Parse("<...> <...> 520001 JO31AB")
+            .Should().BeOfType<EuVhfContestMessage>().Subject;
+
+        msg.Call1.Should().Be("<...>");
+        msg.Call2.Should().Be("<...>");
+        msg.Exchange.Should().Be("520001");
+        msg.Grid.Should().Be("JO31AB");
+    }
+
+    [Theory]
+    [InlineData("<PA3XYZ> <G4ABC> 999999 IO91NP")]  // exchange out of range
+    [InlineData("<PA3XYZ> <G4ABC> 519999 IO91NP")]  // exchange too low
+    public void Parse_EuVhf_InvalidExchange_ReturnsFreeText(string raw)
+    {
+        MessageParser.Parse(raw)
+            .Should().BeOfType<FreeTextMessage>(
+                $"invalid exchange in '{raw}' must fall through to FreeTextMessage");
+    }
+
+    [Fact]
+    public void Parse_EuVhf_Properties_ComputedCorrectly()
+    {
+        // exchange "590003" → RstPrefix=59, SerialNumber=3
+        var msg = MessageParser.Parse("<PA3XYZ> <G4ABC> 590003 IO91NP")
+            .Should().BeOfType<EuVhfContestMessage>().Subject;
+
+        msg.RstPrefix.Should().Be(59);
+        msg.SerialNumber.Should().Be(3);
+    }
+
+    [Fact]
+    public void Parse_EuVhf_RstPrefixMin_Is52()
+    {
+        // exchange "520001" → RstPrefix=52, SerialNumber=1
+        var msg = MessageParser.Parse("<W1AW> <K9AN> 520001 JN89AB")
+            .Should().BeOfType<EuVhfContestMessage>().Subject;
+
+        msg.RstPrefix.Should().Be(52);
+        msg.SerialNumber.Should().Be(1);
+    }
+
+    // ── DXpedition (i3=0, n3=1) ──────────────────────────────────────────────
+
+    [Fact]
+    public void Parse_DXpedition_NegativeReport_ReturnsDXpeditionMessage()
+    {
+        var msg = MessageParser.Parse("K1ABC RR73; W9XYZ <KH1/KH7Z> -12")
+            .Should().BeOfType<DXpeditionMessage>().Subject;
+
+        msg.CallRr73.Should().Be("K1ABC");
+        msg.CallReport.Should().Be("W9XYZ");
+        msg.DxCallsign.Should().Be("<KH1/KH7Z>");
+        msg.ReportDb.Should().Be(-12);
+    }
+
+    [Fact]
+    public void Parse_DXpedition_PositiveReport_ReturnsDXpeditionMessage()
+    {
+        var msg = MessageParser.Parse("DL1ABC RR73; VK2ZD <P29KPH> +06")
+            .Should().BeOfType<DXpeditionMessage>().Subject;
+
+        msg.CallRr73.Should().Be("DL1ABC");
+        msg.CallReport.Should().Be("VK2ZD");
+        msg.DxCallsign.Should().Be("<P29KPH>");
+        msg.ReportDb.Should().Be(6);
+    }
+
+    [Fact]
+    public void Parse_DXpedition_UnknownHash_StillReturnsDXpeditionMessage()
+    {
+        // Decoder emits "<...>" when hash is not resolved; parser must still classify it.
+        var msg = MessageParser.Parse("K1ABC RR73; W9XYZ <...> -12")
+            .Should().BeOfType<DXpeditionMessage>().Subject;
+
+        msg.DxCallsign.Should().Be("<...>");
+        msg.ReportDb.Should().Be(-12);
+    }
+
+    [Fact]
+    public void Parse_DXpedition_ZeroReport_IsCorrect()
+    {
+        var msg = MessageParser.Parse("OK1TE RR73; W1AW <VP8ABC> +00")
+            .Should().BeOfType<DXpeditionMessage>().Subject;
+
+        msg.ReportDb.Should().Be(0);
+    }
+
+    [Theory]
+    [InlineData("K1ABC W9XYZ <KH1/KH7Z> -12")]    // missing "RR73;" — looks like normal exchange
+    [InlineData("K1ABC RR73 W9XYZ <KH1/KH7Z> -12")]  // "RR73" without semicolon
+    public void Parse_DXpedition_MissingRr73Semicolon_DoesNotReturnDXpeditionMessage(string raw)
+    {
+        // Without the literal "RR73;" the message must NOT be parsed as DXpedition.
+        MessageParser.Parse(raw).Should().NotBeOfType<DXpeditionMessage>(
+            $"\"{raw}\" is missing the RR73; marker and must not parse as DXpedition");
+    }
+
+    [Fact]
+    public void Parse_DXpedition_LowerCase_NormalisedCorrectly()
+    {
+        // Parser uppercases the whole message before splitting
+        var msg = MessageParser.Parse("k1abc rr73; w9xyz <kh1/kh7z> -12")
+            .Should().BeOfType<DXpeditionMessage>().Subject;
+
+        msg.CallRr73.Should().Be("K1ABC");
+        msg.CallReport.Should().Be("W9XYZ");
+        msg.DxCallsign.Should().Be("<KH1/KH7Z>");
+        msg.ReportDb.Should().Be(-12);
+    }
 }

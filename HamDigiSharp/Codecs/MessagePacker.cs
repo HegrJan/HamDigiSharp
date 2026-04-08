@@ -18,6 +18,42 @@ public sealed class MessagePacker
     private const string A3_28   = "0123456789";
     private const string A4_28   = " ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
+    // ── ARRL Field Day sections (86 entries, 1-indexed in WSJT-X) ────────────
+    private static readonly string[] ArrlSections =
+    {
+        "AB","AK","AL","AR","AZ","BC","CO","CT","DE","EB",
+        "EMA","ENY","EPA","EWA","GA","GH","IA","ID","IL","IN",
+        "KS","KY","LA","LAX","NS","MB","MDC","ME","MI","MN",
+        "MO","MS","MT","NC","ND","NE","NFL","NH","NL","NLI",
+        "NM","NNJ","NNY","TER","NTX","NV","OH","OK","ONE","ONN",
+        "ONS","OR","ORG","PAC","PR","QC","RI","SB","SC","SCV",
+        "SD","SDG","SF","SFL","SJV","SK","SNJ","STX","SV","TN",
+        "UT","VA","VI","VT","WCF","WI","WMA","WNY","WPA","WTX",
+        "WV","WWA","WY","DX","PE","NB"
+    };
+
+    // ── ARRL RTTY multipliers (171 entries, 1-indexed in WSJT-X) ────────────
+    private static readonly string[] RttyMultipliers;
+
+    static MessagePacker()
+    {
+        var m = new string[171];
+        string[] head =
+        {
+            "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA",
+            "HI","ID","IL","IN","IA","KS","KY","LA","ME","MD",
+            "MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ",
+            "NM","NY","NC","ND","OH","OK","OR","PA","RI","SC",
+            "SD","TN","TX","UT","VT","VA","WA","WV","WI","WY",
+            "NB","NS","QC","ON","MB","SK","AB","BC","NWT","NF",
+            "LB","NU","YT","PEI","DC","DR","FR","GD","GR","OV",
+            "ZH","ZL"
+        };
+        for (int i = 0; i < head.Length; i++) m[i] = head[i];
+        for (int i = 0; i < 99; i++) m[72 + i] = $"X{i + 1:D2}";
+        RttyMultipliers = m;
+    }
+
     // NTOKENS = 2063592, MAX22 = 4194304
     private const int NTokens = 2063592;
     private const int Max22 = 4194304;
@@ -229,9 +265,7 @@ public sealed class MessagePacker
         if (!Unpack28(n28a, out string c1) || n28a <= 2) { success = false; return ""; }
         if (!Unpack28(n28b, out string c2) || n28b <= 2) { success = false; return ""; }
         string c3 = LookupHash10(n10, c1, c2);
-        return c3.StartsWith('<')
-            ? $"{c1} RR73; {c2} {c3} {crpt}"
-            : $"{c1} RR73; {c2} <{c3}> {crpt}";
+        return $"{c1} RR73; {c2} {c3} {crpt}"; // LookupHash10 always returns <...>
     }
 
     private string UnpackFieldDay(ReadOnlySpan<bool> c77, int n3, ref bool success)
@@ -244,9 +278,11 @@ public sealed class MessagePacker
         int isec   = BinToInt(c77, 64, 71);
         if (!Unpack28(n28a, out string c1) || n28a <= 2) { success = false; return ""; }
         if (!Unpack28(n28b, out string c2) || n28b <= 2) { success = false; return ""; }
+        if (isec < 1 || isec > ArrlSections.Length) { success = false; return ""; }
         int ntx = intx + 1 + (n3 == 4 ? 16 : 0);
         string cntx = $"{ntx}{(char)('A' + nclass)}";
-        return ir == 0 ? $"{c1} {c2} {cntx}" : $"{c1} {c2} R {cntx}";
+        string sec = ArrlSections[isec - 1];
+        return ir == 0 ? $"{c1} {c2} {cntx} {sec}" : $"{c1} {c2} R {cntx} {sec}";
     }
 
     private string UnpackTelemetry(ReadOnlySpan<bool> c77)
@@ -254,7 +290,9 @@ public sealed class MessagePacker
         int b23  = BinToInt(c77, 0, 23);
         int b24a = BinToInt(c77, 23, 47);
         int b24b = BinToInt(c77, 47, 71);
-        return (b23.ToString("X") + b24a.ToString("X") + b24b.ToString("X")).TrimStart('0').ToUpperInvariant();
+        // Each part padded to its full hex width to preserve positional encoding
+        string raw = b23.ToString("X6") + b24a.ToString("X6") + b24b.ToString("X6");
+        return raw.TrimStart('0');
     }
 
     private string UnpackType12(ReadOnlySpan<bool> c77, int i3, ref bool success)
@@ -322,11 +360,23 @@ public sealed class MessagePacker
         string crpt = $"5{irpt + 2}9";
         if (!Unpack28(n28a, out string c1)) { success = false; return ""; }
         if (!Unpack28(n28b, out string c2)) { success = false; return ""; }
-        int nserial = nexch < 8000 ? nexch : 0;
-        string exc = nserial > 0 ? $"{nserial:D4}" : "";
+        string exc;
+        if (nexch > 8000)
+        {
+            int imult = nexch - 8000;
+            exc = (imult >= 1 && imult <= RttyMultipliers.Length) ? RttyMultipliers[imult - 1] : "";
+        }
+        else if (nexch >= 1)
+        {
+            exc = $"{nexch:D4}";
+        }
+        else
+        {
+            exc = "";
+        }
         string prefix = itu == 1 ? "TU; " : "";
         string r = ir == 1 ? " R " : " ";
-        return $"{prefix}{c1}{r}{c2} {crpt} {exc}".Trim();
+        return $"{prefix}{c1} {c2}{r}{crpt} {exc}".Trim();
     }
 
     private string UnpackType4(ReadOnlySpan<bool> c77, ref bool success)
@@ -346,11 +396,11 @@ public sealed class MessagePacker
             tmp /= 38;
         }
         string c11s = new string(c11).Trim();
-        string c3 = iflip == 0 ? LookupHash12(n12, c11s) : LookupHash12(n12, c11s);
+        string c3 = LookupHash12(n12, c11s);
 
         string callA = iflip == 0 ? c3 : c11s;
         string callB = iflip == 0 ? c11s : c3;
-        RegisterCallsign(iflip == 0 ? c11s : c11s);
+        RegisterCallsign(c11s); // always the full (non-hashed) callsign
 
         if (icq == 1) return $"CQ {callB}";
         return nrpt switch
@@ -408,14 +458,20 @@ public sealed class MessagePacker
 
     private static void ComputeHashes(string call, out int h10, out int h12, out int h22)
     {
-        // Polynomial hash matching MSHV's ihashcall
-        long n = 0;
-        foreach (char c in call.PadRight(13))
+        // Matches WSJTX's ihashcall: n8 = sum of base-38 digits over 11 chars,
+        // then extract top m bits of (47055833459 * n8) using unsigned right shift.
+        const string c38 = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ/";
+        long n8 = 0;
+        for (int i = 0; i < 11; i++)
         {
-            n = n * 38 + Math.Max(0, " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ".IndexOf(c));
+            char ch = i < call.Length ? call[i] : ' ';
+            int j = c38.IndexOf(ch);
+            if (j < 0) j = 0;
+            n8 = 38 * n8 + j;
         }
-        h22 = (int)(n & 0x3FFFFF);
-        h12 = (int)((n >> 1) & 0xFFF);
-        h10 = (int)((n >> 2) & 0x3FF);
+        ulong product = unchecked((ulong)(47055833459L * n8));
+        h10 = (int)(product >> 54);   // top 10 bits → 0..1023
+        h12 = (int)(product >> 52);   // top 12 bits → 0..4095
+        h22 = (int)(product >> 42);   // top 22 bits → 0..4194303
     }
 }
