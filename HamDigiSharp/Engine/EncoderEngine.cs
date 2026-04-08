@@ -10,7 +10,7 @@ namespace HamDigiSharp.Engine;
 public sealed class EncoderEngine : IDisposable
 {
     private readonly Dictionary<DigitalMode, IDigitalModeEncoder> _encoders;
-    private bool _disposed;
+    private volatile bool _disposed;
 
     public EncoderEngine()
     {

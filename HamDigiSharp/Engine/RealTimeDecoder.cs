@@ -95,13 +95,17 @@ public sealed class RealTimeDecoder : IDisposable
         return Math.Clamp(Math.Min(signalSamp, ratioSamp), _guardSamples + 1, capacity - 1);
     }
 
-    // Inflight guard + pending
-    private int _decoding;
+    // Inflight guard + pending — all managed under _pendingLock (no Interlocked).
+    // _decoding is set to true before LaunchDecodeTask and cleared to false inside
+    // the same lock once the finally block confirms no new period is pending.
+    // This removes the TOCTOU window that existed when _decoding was an int managed
+    // with Interlocked operations outside the lock.
+    private bool _decoding;
     private readonly object _pendingLock = new();
     private (Task<IReadOnlyList<DecodeResult>>? task, DateTimeOffset windowStart)? _pendingPeriod;
 
     private DateTimeOffset _windowStart;
-    private bool _disposed;
+    private volatile bool _disposed;
 
     // ── Public surface ────────────────────────────────────────────────────────
 
@@ -148,6 +152,14 @@ public sealed class RealTimeDecoder : IDisposable
     /// <para>Set <see cref="DecoderDepth.Deep"/> for OSD order-2 sensitivity at the cost of
     /// roughly 50× more LDPC work.  Set <c>MyCall</c>/<c>MyGrid</c> here (not on the
     /// external engine) to enable AP-assisted decode in real-time mode.</para>
+    ///
+    /// <para><b>Important</b>: changes take effect only when a new <see cref="DecoderOptions"/>
+    /// instance is assigned to this property (not when individual properties of the returned
+    /// object are mutated). Example:
+    /// <code>
+    /// rt.RealTimeOptions = rt.RealTimeOptions with { MaxCandidates = 40 };
+    /// </code>
+    /// </para>
     /// </summary>
     public DecoderOptions RealTimeOptions
     {
@@ -183,20 +195,12 @@ public sealed class RealTimeDecoder : IDisposable
         FreqHigh = protocol.DefaultFreqHigh;
     }
 
-    /// <param name="engine">
-    ///   Accepted for API compatibility; the real-time decode path owns an internal
-    ///   fast-configured engine and does not use this parameter.
-    ///   Prefer the <see cref="RealTimeDecoder(IProtocol, int)"/> overload.
-    /// </param>
+    /// <summary>
+    /// Creates a real-time decoder for the given <paramref name="mode"/>.
+    /// </summary>
     /// <param name="mode">Digital mode to decode.</param>
     /// <param name="captureRate">Sample rate of audio fed to <see cref="AddSamples"/>.</param>
-    public RealTimeDecoder(DecoderEngine engine, DigitalMode mode, int captureRate)
-        : this(mode, captureRate)
-    {
-        ArgumentNullException.ThrowIfNull(engine);
-    }
-
-    private RealTimeDecoder(DigitalMode mode, int captureRate)
+    public RealTimeDecoder(DigitalMode mode, int captureRate)
     {
         if (captureRate <= 0) throw new ArgumentOutOfRangeException(nameof(captureRate));
 
@@ -230,6 +234,20 @@ public sealed class RealTimeDecoder : IDisposable
         // Create and configure the dedicated fast engine.
         _rtEngine = new DecoderEngine();
         _rtEngine.Configure(_rtOptions);
+    }
+
+    /// <param name="engine">
+    ///   Accepted for API compatibility; the real-time decode path owns an internal
+    ///   fast-configured engine and does not use this parameter.
+    ///   Use <see cref="RealTimeDecoder(DigitalMode, int)"/> instead.
+    /// </param>
+    /// <param name="mode">Digital mode to decode.</param>
+    /// <param name="captureRate">Sample rate of audio fed to <see cref="AddSamples"/>.</param>
+    [Obsolete("Pass only (DigitalMode, int) — the DecoderEngine parameter is ignored. Use RealTimeDecoder(DigitalMode, int) instead.")]
+    public RealTimeDecoder(DecoderEngine engine, DigitalMode mode, int captureRate)
+        : this(mode, captureRate)
+    {
+        ArgumentNullException.ThrowIfNull(engine);
     }
 
     // ── Audio input ───────────────────────────────────────────────────────────
@@ -317,8 +335,6 @@ public sealed class RealTimeDecoder : IDisposable
                 string utcStr  = _windowStart.ToString("HHmmss");
                 double freqLow = FreqLow, freqHigh = FreqHigh;
 
-                // Re-apply options in case RealTimeOptions was changed since construction
-                _rtEngine.Configure(_rtOptions);
                 var taskRef     = _rtEngine.DecodeAsync(snapshot, _mode, freqLow, freqHigh, utcStr);
                 _earlyDecodeTask = taskRef;
 
@@ -349,7 +365,6 @@ public sealed class RealTimeDecoder : IDisposable
                     // decoder sees the same amount of period audio as before the guard band.
                     var snapshot  = _ring.AsSpan(0, capacity).ToArray();
                     string utcStr = windowStart.ToString("HHmmss");
-                    _rtEngine.Configure(_rtOptions);
                     var fullTask  = _rtEngine.DecodeAsync(
                         snapshot, _mode, FreqLow, FreqHigh, utcStr);
                     FireDecode(fullTask, windowStart);
@@ -373,12 +388,21 @@ public sealed class RealTimeDecoder : IDisposable
     private void FireDecode(
         Task<IReadOnlyList<DecodeResult>>? primaryTask, DateTimeOffset windowStart)
     {
-        if (Interlocked.CompareExchange(ref _decoding, 1, 0) != 0)
+        bool shouldLaunch;
+        lock (_pendingLock)
         {
-            lock (_pendingLock) _pendingPeriod = (primaryTask, windowStart);
-            return;
+            if (!_decoding)
+            {
+                _decoding    = true;
+                shouldLaunch = true;
+            }
+            else
+            {
+                _pendingPeriod = (primaryTask, windowStart);
+                shouldLaunch   = false;
+            }
         }
-        LaunchDecodeTask(primaryTask, windowStart);
+        if (shouldLaunch) LaunchDecodeTask(primaryTask, windowStart);
     }
 
     private void LaunchDecodeTask(
@@ -413,17 +437,23 @@ public sealed class RealTimeDecoder : IDisposable
             }
             finally
             {
+                // Read and clear _pendingPeriod under the lock, and only clear
+                // _decoding when there is no queued period to launch next.
+                // This eliminates the TOCTOU window that existed when _decoding was
+                // managed with Interlocked outside the lock: a racing FireDecode
+                // call can no longer slip in between the lock release and the
+                // Interlocked clear and have its pending entry silently lost.
                 (Task<IReadOnlyList<DecodeResult>>? task, DateTimeOffset ws)? pending;
                 lock (_pendingLock)
                 {
-                    pending = _pendingPeriod;
+                    pending        = _pendingPeriod;
                     _pendingPeriod = null;
+                    if (!pending.HasValue)
+                        _decoding = false;
                 }
 
                 if (pending.HasValue)
                     LaunchDecodeTask(pending.Value.task, pending.Value.ws);
-                else
-                    Interlocked.Exchange(ref _decoding, 0);
             }
         });
     }

@@ -141,14 +141,14 @@ public class RealTimeDecoderTests
     [Fact]
     public void Constructor_ValidArgs_DoesNotThrow()
     {
-        using var engine = new DecoderEngine();
         var ex = Record.Exception(() =>
         {
-            using var rt = new RealTimeDecoder(engine, DigitalMode.FT8, 48000);
+            using var rt = new RealTimeDecoder(DigitalMode.FT8, 48000);
         });
         ex.Should().BeNull();
     }
 
+    #pragma warning disable CS0618 // deprecated DecoderEngine overload tested intentionally
     [Fact]
     public void Constructor_NullEngine_Throws()
     {
@@ -156,13 +156,13 @@ public class RealTimeDecoderTests
             new RealTimeDecoder(null!, DigitalMode.FT8, 48000));
         ex.Should().BeOfType<ArgumentNullException>();
     }
+    #pragma warning restore CS0618
 
     [Fact]
     public void Constructor_ZeroCaptureRate_Throws()
     {
-        using var engine = new DecoderEngine();
         var ex = Record.Exception(() =>
-            new RealTimeDecoder(engine, DigitalMode.FT8, 0));
+            new RealTimeDecoder(DigitalMode.FT8, 0));
         ex.Should().BeOfType<ArgumentOutOfRangeException>();
     }
 
@@ -171,8 +171,7 @@ public class RealTimeDecoderTests
     [Fact]
     public void AddSamples_EmptySpan_DoesNothing()
     {
-        using var engine = new DecoderEngine();
-        using var rt     = new RealTimeDecoder(engine, DigitalMode.FT8, 12000)
+        using var rt     = new RealTimeDecoder(DigitalMode.FT8, 12000)
             { AlignToUtc = false };
         var ex = Record.Exception(() => rt.AddSamples(Array.Empty<float>()));
         ex.Should().BeNull();
@@ -181,8 +180,7 @@ public class RealTimeDecoderTests
     [Fact]
     public void AddSamples_ShortSilence_DoesNotThrow()
     {
-        using var engine = new DecoderEngine();
-        using var rt     = new RealTimeDecoder(engine, DigitalMode.FT8, 12000)
+        using var rt     = new RealTimeDecoder(DigitalMode.FT8, 12000)
             { AlignToUtc = false };
         var ex = Record.Exception(() => rt.AddSamples(new float[1000]));
         ex.Should().BeNull();
@@ -191,8 +189,7 @@ public class RealTimeDecoderTests
     [Fact]
     public void AddSamples_AfterDispose_Throws()
     {
-        using var engine = new DecoderEngine();
-        var rt = new RealTimeDecoder(engine, DigitalMode.FT8, 12000)
+        var rt = new RealTimeDecoder(DigitalMode.FT8, 12000)
             { AlignToUtc = false };
         rt.Dispose();
         var ex = Record.Exception(() => rt.AddSamples(new float[100]));
@@ -204,8 +201,7 @@ public class RealTimeDecoderTests
     [Fact]
     public void AddSamples_WithResampling48kTo12k_DoesNotThrow()
     {
-        using var engine = new DecoderEngine();
-        using var rt     = new RealTimeDecoder(engine, DigitalMode.FT8, 48000)
+        using var rt     = new RealTimeDecoder(DigitalMode.FT8, 48000)
             { AlignToUtc = false };
         var ex = Record.Exception(() => rt.AddSamples(new float[4800])); // 100 ms @ 48 kHz
         ex.Should().BeNull("48000→12000 resampling must not throw");
@@ -214,8 +210,7 @@ public class RealTimeDecoderTests
     [Fact]
     public void AddSamples_SameCaptureAndDecoderRate_NoResamplerNeeded()
     {
-        using var engine = new DecoderEngine();
-        using var rt     = new RealTimeDecoder(engine, DigitalMode.FT8, 12000)
+        using var rt     = new RealTimeDecoder(DigitalMode.FT8, 12000)
             { AlignToUtc = false };
         var ex = Record.Exception(() => rt.AddSamples(new float[1200]));
         ex.Should().BeNull();
@@ -230,8 +225,7 @@ public class RealTimeDecoderTests
     [Fact]
     public async Task AddSamples_OnePeriodOfSilence_FiresPeriodDecoded()
     {
-        using var engine = new DecoderEngine();
-        using var rt     = new RealTimeDecoder(engine, DigitalMode.FT8, 12000)
+        using var rt     = new RealTimeDecoder(DigitalMode.FT8, 12000)
             { AlignToUtc = false, FreqLow = 1000, FreqHigh = 1050 };
 
         var fired = new TaskCompletionSource<IReadOnlyList<DecodeResult>>();
@@ -249,8 +243,7 @@ public class RealTimeDecoderTests
     public async Task AddSamples_TwoPeriods_FiresTwice()
     {
         // FT4 period = 7.5 s → 90 000 samples @ 12 kHz
-        using var engine = new DecoderEngine();
-        using var rt     = new RealTimeDecoder(engine, DigitalMode.FT4, 12000)
+        using var rt     = new RealTimeDecoder(DigitalMode.FT4, 12000)
             { AlignToUtc = false, FreqLow = 1000, FreqHigh = 1050 };
 
         int count = 0;
@@ -272,8 +265,7 @@ public class RealTimeDecoderTests
     public async Task AddSamples_InSmallChunks_FiresOncePerPeriod()
     {
         // MSKMS: 1 s period = 12 000 samples @ 12 kHz. Feed as 100-sample chunks.
-        using var engine = new DecoderEngine();
-        using var rt     = new RealTimeDecoder(engine, DigitalMode.MSKMS, 12000)
+        using var rt     = new RealTimeDecoder(DigitalMode.MSKMS, 12000)
             { AlignToUtc = false, FreqLow = 1000, FreqHigh = 1050 };
 
         int fired = 0;
@@ -298,8 +290,7 @@ public class RealTimeDecoderTests
     [Fact]
     public async Task PeriodDecoded_WindowStartIsReasonable()
     {
-        using var engine = new DecoderEngine();
-        using var rt     = new RealTimeDecoder(engine, DigitalMode.MSKMS, 12000)
+        using var rt     = new RealTimeDecoder(DigitalMode.MSKMS, 12000)
             { AlignToUtc = false, FreqLow = 1000, FreqHigh = 1050 };
 
         DateTimeOffset? ws = null;
@@ -321,8 +312,7 @@ public class RealTimeDecoderTests
     [Fact]
     public void FreqDefaults_Are200And3000()
     {
-        using var engine = new DecoderEngine();
-        using var rt     = new RealTimeDecoder(engine, DigitalMode.FT8, 12000);
+        using var rt     = new RealTimeDecoder(DigitalMode.FT8, 12000);
         rt.FreqLow.Should().Be(200);
         rt.FreqHigh.Should().Be(3000);
     }
@@ -330,24 +320,21 @@ public class RealTimeDecoderTests
     [Fact]
     public void AlignToUtc_DefaultIsTrue()
     {
-        using var engine = new DecoderEngine();
-        using var rt     = new RealTimeDecoder(engine, DigitalMode.FT8, 12000);
+        using var rt     = new RealTimeDecoder(DigitalMode.FT8, 12000);
         rt.AlignToUtc.Should().BeTrue();
     }
 
     [Fact]
     public void EarlyDecodeRatio_DefaultIs0Point90()
     {
-        using var engine = new DecoderEngine();
-        using var rt     = new RealTimeDecoder(engine, DigitalMode.FT8, 12000);
+        using var rt     = new RealTimeDecoder(DigitalMode.FT8, 12000);
         rt.EarlyDecodeRatio.Should().BeApproximately(0.90f, 0.001f);
     }
 
     [Fact]
     public void RealTimeOptions_DefaultDecoderDepth_IsNormal_BpPlusOsd()
     {
-        using var engine = new DecoderEngine();
-        using var rt     = new RealTimeDecoder(engine, DigitalMode.FT8, 12000);
+        using var rt     = new RealTimeDecoder(DigitalMode.FT8, 12000);
         rt.RealTimeOptions.DecoderDepth.Should().Be(DecoderDepth.Normal,
             "RT path must use BP+OSD (DecoderDepth.Normal) to match WSJT-X sensitivity");
     }
@@ -355,8 +342,7 @@ public class RealTimeDecoderTests
     [Fact]
     public void RealTimeOptions_DefaultMaxCandidates_AtMost100()
     {
-        using var engine = new DecoderEngine();
-        using var rt     = new RealTimeDecoder(engine, DigitalMode.FT8, 12000);
+        using var rt     = new RealTimeDecoder(DigitalMode.FT8, 12000);
         rt.RealTimeOptions.MaxCandidates.Should().BeLessThanOrEqualTo(100,
             "RT mode should use fewer candidates for lower latency");
     }
@@ -368,8 +354,7 @@ public class RealTimeDecoderTests
     [Fact]
     public async Task AddSamples_EarlyDecodeRatio1_0_FiresPeriodDecoded()
     {
-        using var engine = new DecoderEngine();
-        using var rt     = new RealTimeDecoder(engine, DigitalMode.MSK144, 12000)
+        using var rt     = new RealTimeDecoder(DigitalMode.MSK144, 12000)
             { AlignToUtc = false, FreqLow = 1000, FreqHigh = 1050, EarlyDecodeRatio = 1.0f };
 
         var fired = new TaskCompletionSource<bool>();
@@ -389,8 +374,7 @@ public class RealTimeDecoderTests
     [Fact]
     public async Task AddSamples_EarlyDecodeRatio0Point90_FiresPeriodDecoded()
     {
-        using var engine = new DecoderEngine();
-        using var rt     = new RealTimeDecoder(engine, DigitalMode.MSKMS, 12000)
+        using var rt     = new RealTimeDecoder(DigitalMode.MSKMS, 12000)
             { AlignToUtc = false, FreqLow = 1000, FreqHigh = 1050, EarlyDecodeRatio = 0.90f };
 
         var fired = new TaskCompletionSource<bool>();
@@ -453,8 +437,7 @@ public class RealTimeDecoderTests
         var buffer = new float[periodSamples];
         signal.AsSpan(0, Math.Min(signal.Length, periodSamples)).CopyTo(buffer);
 
-        using var engine = new DecoderEngine();
-        using var rt = new RealTimeDecoder(engine, DigitalMode.FT2, Rate)
+        using var rt = new RealTimeDecoder(DigitalMode.FT2, Rate)
         {
             AlignToUtc = false,
             FreqLow    = 700,
@@ -496,8 +479,7 @@ public class RealTimeDecoderTests
         var buffer = new float[periodSamples];
         signal.AsSpan(0, Math.Min(signal.Length, periodSamples)).CopyTo(buffer);
 
-        using var engine = new DecoderEngine();
-        using var rt = new RealTimeDecoder(engine, DigitalMode.FT2, Rate)
+        using var rt = new RealTimeDecoder(DigitalMode.FT2, Rate)
         {
             AlignToUtc = false,
             FreqLow    = 700,
@@ -568,8 +550,7 @@ public class RealTimeDecoderTests
         int remaining = signal.Length - negDtSamples;
         Array.Copy(signal, negDtSamples, curPeriod, 0, Math.Min(remaining, periodSamples));
 
-        using var engine = new DecoderEngine();
-        using var rt = new RealTimeDecoder(engine, DigitalMode.FT2, Rate)
+        using var rt = new RealTimeDecoder(DigitalMode.FT2, Rate)
         {
             AlignToUtc = false,
             FreqLow    = 700,
@@ -626,8 +607,7 @@ public class RealTimeDecoderTests
         const int    Rate     = 12000;
         const double DtSec    = 0.9;    // signal starts 0.9 s after UTC period boundary
 
-        using var engine = new DecoderEngine();
-        using var rt = new RealTimeDecoder(engine, DigitalMode.FT4, Rate)
+        using var rt = new RealTimeDecoder(DigitalMode.FT4, Rate)
             { AlignToUtc = false, FreqLow = 850, FreqHigh = 1200 };
 
         var tcs = new TaskCompletionSource<IReadOnlyList<DecodeResult>>(
@@ -665,8 +645,7 @@ public class RealTimeDecoderTests
         const int    Rate     = 12000;
         const double DtSec    = 1.0;    // signal starts 1.0 s after UTC period boundary
 
-        using var engine = new DecoderEngine();
-        using var rt = new RealTimeDecoder(engine, DigitalMode.FT2, Rate)
+        using var rt = new RealTimeDecoder(DigitalMode.FT2, Rate)
             { AlignToUtc = false, FreqLow = 700, FreqHigh = 1100 };
 
         var tcs = new TaskCompletionSource<IReadOnlyList<DecodeResult>>(
@@ -759,8 +738,7 @@ public class RealTimeDecoderTests
         DigitalMode mode, string message, double freqHz, double snrDb, int seed)
     {
         const int Rate = 12000;
-        using var engine = new DecoderEngine();
-        using var rt = new RealTimeDecoder(engine, mode, Rate)
+        using var rt = new RealTimeDecoder(mode, Rate)
             { AlignToUtc = false, FreqLow = freqHz - 200, FreqHigh = freqHz + 200 };
 
         var tcs = new TaskCompletionSource<IReadOnlyList<DecodeResult>>(
@@ -808,3 +786,5 @@ public class RealTimeDecoderTests
         return result;
     }
 }
+
+

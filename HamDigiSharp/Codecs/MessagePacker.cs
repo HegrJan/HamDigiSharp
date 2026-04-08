@@ -65,6 +65,7 @@ public sealed class MessagePacker
     private readonly int[] _hash22 = new int[650];
     private readonly string[] _hashCall = new string[650];
     private int _hashWritePos = 16; // start after reserved slots
+    private readonly object _hashLock = new();
 
     public MessagePacker() { Array.Fill(_hash10, -1); Array.Fill(_hash12, -1); Array.Fill(_hash22, -1); }
 
@@ -102,18 +103,25 @@ public sealed class MessagePacker
 
     // ── Hash table management ─────────────────────────────────────────────────
 
-    /// <summary>Register a callsign so it can be looked up by hash during unpack.</summary>
+    /// <summary>
+    /// Register a callsign so it can be looked up by hash during unpack.
+    /// Thread-safe: may be called concurrently from PLINQ decode workers and
+    /// <see cref="BaseDecoder.Emit"/> on the result thread.
+    /// </summary>
     public void RegisterCallsign(string callsign)
     {
         if (string.IsNullOrWhiteSpace(callsign)) return;
         callsign = callsign.Trim().ToUpperInvariant();
         ComputeHashes(callsign, out int h10, out int h12, out int h22);
-        int pos = _hashWritePos % _hashCall.Length;
-        _hash10[pos] = h10;
-        _hash12[pos] = h12;
-        _hash22[pos] = h22;
-        _hashCall[pos] = callsign;
-        _hashWritePos++;
+        lock (_hashLock)
+        {
+            int pos = _hashWritePos % _hashCall.Length;
+            _hash10[pos]   = h10;
+            _hash12[pos]   = h12;
+            _hash22[pos]   = h22;
+            _hashCall[pos] = callsign;
+            _hashWritePos++;
+        }
     }
 
     // ── Bit extraction ────────────────────────────────────────────────────────
@@ -433,26 +441,35 @@ public sealed class MessagePacker
 
     private string LookupHash10(int n10, string excl1, string excl2)
     {
-        for (int i = 0; i < _hashCall.Length; i++)
-            if (_hash10[i] == n10 && _hashCall[i] != null &&
-                _hashCall[i] != excl1 && _hashCall[i] != excl2)
-                return $"<{_hashCall[i]}>";
+        lock (_hashLock)
+        {
+            for (int i = 0; i < _hashCall.Length; i++)
+                if (_hash10[i] == n10 && _hashCall[i] != null &&
+                    _hashCall[i] != excl1 && _hashCall[i] != excl2)
+                    return $"<{_hashCall[i]}>";
+        }
         return "<...>";
     }
 
     private string LookupHash12(int n12, string excl)
     {
-        for (int i = 0; i < _hashCall.Length; i++)
-            if (_hash12[i] == n12 && _hashCall[i] != null && _hashCall[i] != excl)
-                return $"<{_hashCall[i]}>";
+        lock (_hashLock)
+        {
+            for (int i = 0; i < _hashCall.Length; i++)
+                if (_hash12[i] == n12 && _hashCall[i] != null && _hashCall[i] != excl)
+                    return $"<{_hashCall[i]}>";
+        }
         return "<...>";
     }
 
     private string LookupHash22(int n22)
     {
-        for (int i = 0; i < _hashCall.Length; i++)
-            if (_hash22[i] == n22 && _hashCall[i] != null)
-                return $"<{_hashCall[i]}>";
+        lock (_hashLock)
+        {
+            for (int i = 0; i < _hashCall.Length; i++)
+                if (_hash22[i] == n22 && _hashCall[i] != null)
+                    return $"<{_hashCall[i]}>";
+        }
         return "<...>";
     }
 

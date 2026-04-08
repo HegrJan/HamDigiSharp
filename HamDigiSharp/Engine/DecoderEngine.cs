@@ -34,8 +34,9 @@ namespace HamDigiSharp.Engine;
 public sealed class DecoderEngine : IDisposable
 {
     private readonly Dictionary<DigitalMode, IDigitalModeDecoder> _decoders = new();
+    private readonly Dictionary<IDigitalModeDecoder, Action<DecodeResult>> _resultHandlers = new();
     private DecoderOptions _options = new();
-    private bool _disposed;
+    private volatile bool _disposed;
 
     public event Action<DecodeResult>? ResultAvailable;
 
@@ -129,7 +130,9 @@ public sealed class DecoderEngine : IDisposable
     private void Register(DigitalMode mode, IDigitalModeDecoder dec)
     {
         dec.Configure(_options);
-        dec.ResultAvailable += r => ResultAvailable?.Invoke(r);
+        Action<DecodeResult> handler = r => ResultAvailable?.Invoke(r);
+        dec.ResultAvailable += handler;
+        _resultHandlers[dec] = handler;
         _decoders[mode] = dec;
     }
 
@@ -139,6 +142,10 @@ public sealed class DecoderEngine : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        foreach (var (dec, handler) in _resultHandlers)
+            dec.ResultAvailable -= handler;
+        _resultHandlers.Clear();
+        ResultAvailable = null;
         foreach (var dec in _decoders.Values)
             if (dec is IDisposable d) d.Dispose();
     }

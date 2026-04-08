@@ -23,6 +23,7 @@ public abstract class BaseDecoder : IDigitalModeDecoder
     private readonly double[] _dupFreqs = new double[MaxDup];
     private int _dupCount;
     private string _lastPeriodTime = "";
+    private readonly object _emitLock = new();
 
     protected BaseDecoder() { Array.Fill(_dupMsgs, ""); }
 
@@ -38,12 +39,24 @@ public abstract class BaseDecoder : IDigitalModeDecoder
 
     // ── Result emission ───────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Emits a decode result after deduplication.
+    /// Thread-safe: may be called concurrently from PLINQ worker threads.
+    /// The duplicate-filter state and callsign hash table are protected by
+    /// <c>_emitLock</c>; <see cref="ResultAvailable"/> is invoked outside the
+    /// lock to avoid re-entrancy issues.
+    /// </summary>
     protected void Emit(DecodeResult result)
     {
-        if (IsDuplicate(result)) return;
-        AddDuplicate(result);
-        MessagePacker.RegisterCallsign(ExtractCall(result.Message));
-        ResultAvailable?.Invoke(result);
+        Action<DecodeResult>? handler;
+        lock (_emitLock)
+        {
+            if (IsDuplicate(result)) return;
+            AddDuplicate(result);
+            MessagePacker.RegisterCallsign(ExtractCall(result.Message));
+            handler = ResultAvailable;
+        }
+        handler?.Invoke(result);
     }
 
     // ── Duplicate check ───────────────────────────────────────────────────────
