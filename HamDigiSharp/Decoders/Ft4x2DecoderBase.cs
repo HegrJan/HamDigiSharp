@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Numerics;
 using HamDigiSharp.Codecs;
 using HamDigiSharp.Dsp;
@@ -218,12 +219,22 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
     {
         int nout = NSymbols * Nss;
         var cd   = new Complex[nout];
-        for (int i = 0; i < nout; i++)
+        FillAtOffset(c1, dtSamples, cd, nout);
+        return cd;
+    }
+
+    /// <summary>
+    /// Buffer-filling overload: writes into caller-supplied <paramref name="cd"/>
+    /// (must have length ≥ <paramref name="count"/>).  Safe with pooled arrays.
+    /// </summary>
+    protected void FillAtOffset(Complex[] c1, int dtSamples, Complex[] cd, int count)
+    {
+        int c1Len = c1.Length;
+        for (int i = 0; i < count; i++)
         {
             int idx = dtSamples + i;
-            cd[i] = ((uint)idx < (uint)c1.Length) ? c1[idx] : Complex.Zero;
+            cd[i] = ((uint)idx < (uint)c1Len) ? c1[idx] : Complex.Zero;
         }
-        return cd;
     }
 
     /// <summary>
@@ -315,16 +326,21 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
     protected double[]? ComputeLlr(Complex[] cd, double[,] s4, int minCostasMatches)
     {
         int nss  = Nss;
-        var cbuf = new Complex[nss];
-
-        for (int k = 0; k < NSymbols; k++)
+        // Pool the per-symbol FFT scratch buffer — nss=32 is a power of 2 so the pool
+        // returns exactly 32 elements, which is required by ForwardInPlace.
+        Complex[] cbuf = ArrayPool<Complex>.Shared.Rent(nss);
+        try
         {
-            for (int z = 0; z < nss; z++) cbuf[z] = cd[k * nss + z];
-            Fft.ForwardInPlace(cbuf);
-            for (int x = 0; x < NBins; x++)
-                s4[k, x] = Math.Sqrt(cbuf[x].Real * cbuf[x].Real
-                                   + cbuf[x].Imaginary * cbuf[x].Imaginary);
+            for (int k = 0; k < NSymbols; k++)
+            {
+                for (int z = 0; z < nss; z++) cbuf[z] = cd[k * nss + z];
+                Fft.ForwardInPlace(cbuf);
+                for (int x = 0; x < NBins; x++)
+                    s4[k, x] = Math.Sqrt(cbuf[x].Real * cbuf[x].Real
+                                       + cbuf[x].Imaginary * cbuf[x].Imaginary);
+            }
         }
+        finally { ArrayPool<Complex>.Shared.Return(cbuf); }
 
         if (CountCostasMatches(s4) < minCostasMatches) return null;
 
@@ -368,54 +384,59 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
         Complex[] c1, int dtBest, int minCostasMatches, double[,] s4Nominal)
     {
         int nFft2   = c1.Length;
-        int step    = TimingHalfStep;           // = Nss / 4 = 8 for both FT4 and FT2
-        int step2   = step / 2;                 // = Nss / 8 = 4
+        int step    = TimingHalfStep;
+        int step2   = step / 2;
         int maxDt   = Math.Max(0, nFft2 - NSymbols * Nss);
+        int cdCount = NSymbols * Nss;  // exact element count used from cd buffer
 
-        // Nominal channel (also fills s4Nominal for SNR measurement).
-        Array.Clear(s4Nominal);
-        var cdNom  = ExtractAtOffset(c1, dtBest);
-        double[]? llrNom = ComputeLlr(cdNom, s4Nominal, minCostasMatches);
-        if (llrNom is null) return null;     // signal not present at this frequency
-
-        // Build normalized list starting with the nominal channel.
-        var channels = new List<double[]>(5);
-        var seen     = new HashSet<int> { dtBest };
-        var normNom  = RmsNorm(llrNom);
-        if (normNom is not null) channels.Add(normNom);
-
-        // Four additional timing offsets: ±step and ±step/2; skip duplicates.
-        foreach (int off in new[] { dtBest - step, dtBest - step2, dtBest + step2, dtBest + step })
+        // Rent a single cd buffer reused across all timing channels.
+        // Pool returns power-of-2 size (4096 for cdCount=3296) which is safe here:
+        // FillAtOffset and ComputeLlr only access indices 0..cdCount-1.
+        Complex[] cdBuf = ArrayPool<Complex>.Shared.Rent(cdCount);
+        try
         {
-            int clamped = Math.Clamp(off, 0, maxDt);
-            if (!seen.Add(clamped)) continue;       // skip if identical to a prior offset
+            // Nominal channel (also fills s4Nominal for SNR measurement).
+            Array.Clear(s4Nominal);
+            FillAtOffset(c1, dtBest, cdBuf, cdCount);
+            double[]? llrNom = ComputeLlr(cdBuf, s4Nominal, minCostasMatches);
+            if (llrNom is null) return null;
 
-            var llrOther = ComputeLlr(
-                ExtractAtOffset(c1, clamped),
-                new double[NSymbols, NBins],
-                minCostasMatches);
-            var norm = RmsNorm(llrOther);
-            if (norm is not null) channels.Add(norm);
+            var channels = new List<double[]>(5);
+            var seen     = new HashSet<int> { dtBest };
+            var normNom  = RmsNorm(llrNom);
+            if (normNom is not null) channels.Add(normNom);
+
+            // Four additional timing offsets: ±step and ±step/2; skip duplicates.
+            foreach (int off in new[] { dtBest - step, dtBest - step2, dtBest + step2, dtBest + step })
+            {
+                int clamped = Math.Clamp(off, 0, maxDt);
+                if (!seen.Add(clamped)) continue;
+
+                FillAtOffset(c1, clamped, cdBuf, cdCount);
+                var llrOther = ComputeLlr(cdBuf, new double[NSymbols, NBins], minCostasMatches);
+                var norm = RmsNorm(llrOther);
+                if (norm is not null) channels.Add(norm);
+            }
+            if (channels.Count == 0) return null;
+
+            int n      = channels[0].Length;
+            var result = new double[n];
+            foreach (var ch in channels)
+                for (int i = 0; i < n; i++) result[i] += ch[i];
+
+            double sumSq2 = 0;
+            foreach (var v in result) sumSq2 += v * v;
+            double rms2 = Math.Sqrt(sumSq2 / n);
+            if (rms2 < 1e-20) return llrNom;
+            double scale = LlrScaleFactor / rms2;
+            for (int i = 0; i < n; i++) result[i] *= scale;
+
+            return result;
         }
-        if (channels.Count == 0) return null;
-
-        // Sum normalized channels.
-        int n      = channels[0].Length;
-        var result = new double[n];
-        foreach (var ch in channels)
-            for (int i = 0; i < n; i++) result[i] += ch[i];
-
-        // Normalize the sum to unit-RMS, then scale to LlrScaleFactor.
-        // This ensures LDPC always receives LLR values at the empirically-optimal scale
-        // regardless of the absolute signal level in the recording.
-        double sumSq2 = 0;
-        foreach (var v in result) sumSq2 += v * v;
-        double rms2 = Math.Sqrt(sumSq2 / n);
-        if (rms2 < 1e-20) return llrNom;     // degenerate sum — fall back to nominal
-        double scale = LlrScaleFactor / rms2;
-        for (int i = 0; i < n; i++) result[i] *= scale;
-
-        return result;
+        finally
+        {
+            ArrayPool<Complex>.Shared.Return(cdBuf);
+        }
     }
 
     /// <summary>
@@ -567,14 +588,24 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
     protected static Complex[] ShiftByHalfTone(Complex[] cd, int nss)
     {
         var shifted = new Complex[cd.Length];
-        for (int t = 0; t < cd.Length; t++)
+        FillShiftedByHalfTone(cd, nss, shifted, cd.Length);
+        return shifted;
+    }
+
+    /// <summary>
+    /// Buffer-filling overload: writes the half-tone shifted signal into
+    /// <paramref name="dest"/> (must have length ≥ <paramref name="count"/>).
+    /// Safe with pooled destination arrays.
+    /// </summary>
+    protected static void FillShiftedByHalfTone(Complex[] cd, int nss, Complex[] dest, int count)
+    {
+        for (int t = 0; t < count; t++)
         {
             double phi  = Math.PI * t / nss;
             double cosP = Math.Cos(phi), sinP = Math.Sin(phi);
-            shifted[t] = new Complex(
+            dest[t] = new Complex(
                 cd[t].Real * cosP - cd[t].Imaginary * sinP,
                 cd[t].Real * sinP + cd[t].Imaginary * cosP);
         }
-        return shifted;
     }
 }

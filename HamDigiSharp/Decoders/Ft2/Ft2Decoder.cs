@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Numerics;
 using HamDigiSharp.Codecs;
 using HamDigiSharp.Models;
@@ -146,9 +147,21 @@ public sealed class Ft2Decoder : Ft4x2DecoderBase
                         return (freq, (double[]?)null, 0.0, 0.0);  // no Costas match
 
                     // Half-tone frequency sub-bin variant.
-                    var cdNom  = ExtractAtOffset(c1, dtBest);
-                    double[]? llrHT = ComputeLlr(
-                        ShiftByHalfTone(cdNom, Nss), new double[NSymbols, NBins], MinCostasMatches);
+                    int cdCount2 = NSymbols * Nss;
+                    Complex[] cdBuf2   = ArrayPool<Complex>.Shared.Rent(cdCount2);
+                    Complex[] shifted2 = ArrayPool<Complex>.Shared.Rent(cdCount2);
+                    double[]? llrHT;
+                    try
+                    {
+                        FillAtOffset(c1, dtBest, cdBuf2, cdCount2);
+                        FillShiftedByHalfTone(cdBuf2, Nss, shifted2, cdCount2);
+                        llrHT = ComputeLlr(shifted2, new double[NSymbols, NBins], MinCostasMatches);
+                    }
+                    finally
+                    {
+                        ArrayPool<Complex>.Shared.Return(cdBuf2);
+                        ArrayPool<Complex>.Shared.Return(shifted2);
+                    }
 
                     // Ensemble E = normalized(normA + normB): same technique as BuildLlrVariants,
                     // applied here to produce the best unit-RMS LLR estimate for accumulation.
@@ -240,16 +253,26 @@ public sealed class Ft2Decoder : Ft4x2DecoderBase
         System.Numerics.Complex[] c1, int dtBest, double f0, double dt, string utcTime,
         double[,] s4, ref DecodeResult? result)
     {
-        // 3-timing combined LLR (fills s4 at nominal timing for SNR).
         double[]? llrTiming = ComputeTimingCombinedLlr(c1, dtBest, MinCostasMatches, s4);
         if (llrTiming is null) return false;
 
-        // Half-tone frequency shift of the nominal symbol array.
-        var cdNom = ExtractAtOffset(c1, dtBest);
-        var s4HT  = new double[NSymbols, NBins];
-        double[]? llrHalfTone = ComputeLlr(ShiftByHalfTone(cdNom, Nss), s4HT, MinCostasMatches);
+        int cdCount = NSymbols * Nss;
+        Complex[] cdBuf   = ArrayPool<Complex>.Shared.Rent(cdCount);
+        Complex[] shifted = ArrayPool<Complex>.Shared.Rent(cdCount);
+        try
+        {
+            FillAtOffset(c1, dtBest, cdBuf, cdCount);
+            FillShiftedByHalfTone(cdBuf, Nss, shifted, cdCount);
+            var s4HT = new double[NSymbols, NBins];
+            double[]? llrHalfTone = ComputeLlr(shifted, s4HT, MinCostasMatches);
 
-        return TryLdpcVariants(llrTiming, llrHalfTone, f0, dt, utcTime, s4, ref result);
+            return TryLdpcVariants(llrTiming, llrHalfTone, f0, dt, utcTime, s4, ref result);
+        }
+        finally
+        {
+            ArrayPool<Complex>.Shared.Return(cdBuf);
+            ArrayPool<Complex>.Shared.Return(shifted);
+        }
     }
 
     // ── Shared LDPC loop ─────────────────────────────────────────────────────
@@ -259,35 +282,44 @@ public sealed class Ft2Decoder : Ft4x2DecoderBase
         double[,] s4, ref DecodeResult? result)
     {
         var apMask = EmptyApMask();
-        var msg77  = new bool[77];
-        var cw     = new bool[174];
-
-        foreach (var llr in BuildLlrVariants(llrA, llrB))
+        bool[] msg77 = ArrayPool<bool>.Shared.Rent(77);
+        bool[] cw    = ArrayPool<bool>.Shared.Rent(174);
+        try
         {
-            Array.Clear(msg77); Array.Clear(cw);
-            bool ok = Ldpc174_91.TryDecode(llr, apMask, Options.DecoderDepth,
-                                            msg77, cw, out int hardErrors, out double dmin);
-            if (!ok || hardErrors > 37) continue;
+            Array.Clear(msg77, 0, 77);
+            Array.Clear(cw, 0, 174);
 
-            // Undo FT2's pre-LDPC XOR scramble (identical to FT4, from MSHV decoderft2.cpp).
-            for (int i = 0; i < 77; i++) msg77[i] ^= Rvec[i];
-
-            string message = MessagePacker.Unpack77(msg77, out bool unpkOk);
-            if (!unpkOk || string.IsNullOrWhiteSpace(message)) continue;
-
-            result = new DecodeResult
+            foreach (var llr in BuildLlrVariants(llrA, llrB))
             {
-                UtcTime     = utcTime,
-                Snr         = ComputeSnrDb4Fsk(s4),
-                Dt          = dt,
-                FrequencyHz = f0,
-                Message     = message.Trim(),
-                Mode        = DigitalMode.FT2,
-                HardErrors  = hardErrors,
-                Dmin        = dmin,
-            };
-            return true;
+                Array.Clear(msg77, 0, 77); Array.Clear(cw, 0, 174);
+                bool ok = Ldpc174_91.TryDecode(llr, apMask, Options.DecoderDepth,
+                                                msg77, cw, out int hardErrors, out double dmin);
+                if (!ok || hardErrors > 37) continue;
+
+                for (int i = 0; i < 77; i++) msg77[i] ^= Rvec[i];
+
+                string message = MessagePacker.Unpack77(msg77, out bool unpkOk);
+                if (!unpkOk || string.IsNullOrWhiteSpace(message)) continue;
+
+                result = new DecodeResult
+                {
+                    UtcTime     = utcTime,
+                    Snr         = ComputeSnrDb4Fsk(s4),
+                    Dt          = dt,
+                    FrequencyHz = f0,
+                    Message     = message.Trim(),
+                    Mode        = DigitalMode.FT2,
+                    HardErrors  = hardErrors,
+                    Dmin        = dmin,
+                };
+                return true;
+            }
+            return false;
         }
-        return false;
+        finally
+        {
+            ArrayPool<bool>.Shared.Return(msg77);
+            ArrayPool<bool>.Shared.Return(cw);
+        }
     }
 }

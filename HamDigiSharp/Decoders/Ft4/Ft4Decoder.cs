@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Numerics;
 using HamDigiSharp.Codecs;
 using HamDigiSharp.Models;
@@ -77,52 +78,62 @@ public sealed class Ft4Decoder : Ft4x2DecoderBase
     {
         result = null;
 
-        // Step 1: baseband + optimal timing.
         var c1    = GetBaseband(xFull, f0);
         int dtBst = FindBestTimingOffset(c1, c1.Length);
-        double dt = dtBst / ((double)12000 / _nDown);   // convert to seconds
+        double dt = dtBst / ((double)12000 / _nDown);
 
-        // Step 2: 3-timing-combined LLR (s4 is filled at the nominal timing).
-        // Returns null if the signal isn't present at f0 (Costas check failed).
         double[]? llrTiming = ComputeTimingCombinedLlr(c1, dtBst, MinCostasMatches, s4);
         if (llrTiming is null) return false;
 
-        // Step 3: half-tone frequency shift of the nominal cd.
-        var cdNom      = ExtractAtOffset(c1, dtBst);
-        var s4HT       = new double[NSymbols, NBins];
-        double[]? llrHalfTone = ComputeLlr(ShiftByHalfTone(cdNom, Nss), s4HT, MinCostasMatches);
-
-        // Step 4: try timing-combined, half-tone, max-abs(both), avg(both).
-        var apMask = EmptyApMask();
-        var msg77  = new bool[77];
-        var cw     = new bool[174];
-
-        foreach (var llr in BuildLlrVariants(llrTiming, llrHalfTone))
+        int cdCount = NSymbols * Nss;
+        Complex[] cdBuf   = ArrayPool<Complex>.Shared.Rent(cdCount);
+        Complex[] shifted = ArrayPool<Complex>.Shared.Rent(cdCount);
+        bool[]    msg77   = ArrayPool<bool>.Shared.Rent(77);
+        bool[]    cw      = ArrayPool<bool>.Shared.Rent(174);
+        try
         {
-            Array.Clear(msg77); Array.Clear(cw);
-            bool ok = Ldpc174_91.TryDecode(llr, apMask, Options.DecoderDepth,
-                                            msg77, cw, out int hardErrors, out double dmin);
-            if (!ok || hardErrors > 37) continue;
+            FillAtOffset(c1, dtBst, cdBuf, cdCount);
+            FillShiftedByHalfTone(cdBuf, Nss, shifted, cdCount);
+            double[]? llrHalfTone = ComputeLlr(shifted, new double[NSymbols, NBins], MinCostasMatches);
 
-            for (int i = 0; i < 77; i++) msg77[i] ^= Rvec[i];
+            var apMask = EmptyApMask();
+            Array.Clear(msg77, 0, 77);
+            Array.Clear(cw, 0, 174);
 
-            string message = MessagePacker.Unpack77(msg77, out bool unpkOk);
-            if (!unpkOk || string.IsNullOrWhiteSpace(message)) continue;
-
-            result = new DecodeResult
+            foreach (var llr in BuildLlrVariants(llrTiming, llrHalfTone))
             {
-                UtcTime     = utcTime,
-                Snr         = ComputeSnrDb4Fsk(s4),
-                Dt          = dt,
-                FrequencyHz = f0,
-                Message     = message.Trim(),
-                Mode        = DigitalMode.FT4,
-                HardErrors  = hardErrors,
-                Dmin        = dmin,
-            };
-            return true;
+                Array.Clear(msg77, 0, 77); Array.Clear(cw, 0, 174);
+                bool ok = Ldpc174_91.TryDecode(llr, apMask, Options.DecoderDepth,
+                                                msg77, cw, out int hardErrors, out double dmin);
+                if (!ok || hardErrors > 37) continue;
+
+                for (int i = 0; i < 77; i++) msg77[i] ^= Rvec[i];
+
+                string message = MessagePacker.Unpack77(msg77, out bool unpkOk);
+                if (!unpkOk || string.IsNullOrWhiteSpace(message)) continue;
+
+                result = new DecodeResult
+                {
+                    UtcTime     = utcTime,
+                    Snr         = ComputeSnrDb4Fsk(s4),
+                    Dt          = dt,
+                    FrequencyHz = f0,
+                    Message     = message.Trim(),
+                    Mode        = DigitalMode.FT4,
+                    HardErrors  = hardErrors,
+                    Dmin        = dmin,
+                };
+                return true;
+            }
+            return false;
         }
-        return false;
+        finally
+        {
+            ArrayPool<Complex>.Shared.Return(cdBuf);
+            ArrayPool<Complex>.Shared.Return(shifted);
+            ArrayPool<bool>.Shared.Return(msg77);
+            ArrayPool<bool>.Shared.Return(cw);
+        }
     }
 }
 
