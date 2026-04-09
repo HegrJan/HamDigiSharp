@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using HamDigiSharp.Codecs;
@@ -410,121 +411,136 @@ public sealed class Ft8Decoder : BaseDecoder
 
         // ─ Per-candidate baseband downsampling (WSJT-X ft8_downsample.f90) ───
         double f1 = (minBin + cand.FreqOffset + (double)cand.FreqSub / FreqOsr) * Baud;
-        Complex[] cd0 = Ft8Downsample(fullFft, f1);
+
+        // Allocate exactly Nfft2 — CANNOT pool because Fft.InverseInPlace operates on
+        // the entire array length; pool buckets return power-of-2 sizes (4096 ≠ 3200).
+        var cd0 = new Complex[Nfft2];
+        Ft8Downsample(fullFft, f1, cd0);
 
         // Coarse timing from sync waterfall, then refine using Costas pilot power.
         int ibest0 = (cand.TimeOffset * TimeOsr + cand.TimeSub) * (Subblock / NDown);
         int ibest  = OptimizeIbest(cd0, ibest0);
 
         // Reject implausible timing. ibest/200 converts 200 Hz sample index to seconds.
-        // Valid FT8 signals fit within [-2.5, 3.5] s of the recording window.
-        // The ±0.5 s margin over the nominal FT8 DT range accounts for any residual
-        // Hann-window bias that OptimizeIbest may not fully correct.
         double dt = ibest / 200.0;
         if (dt < -2.5 || dt > 3.5) return false;
 
-        double freq = f1;
-        var apMask  = EmptyApMask();
-        var msg77   = new bool[77];
-        var cw      = new bool[174];
+        double freq   = f1;
+        var    apMask = EmptyApMask();
 
-        // ─ Try frequency sub-passes: nominal f1 and +half-bin offset ─────────
-        for (int ifreqPass = 0; ifreqPass < 2; ifreqPass++)
+        // Pool the hot per-iteration arrays (rented once, reused across ifreqPass and LLR loops).
+        double[] bmeta = ArrayPool<double>.Shared.Rent(174);
+        double[] bmetb = ArrayPool<double>.Shared.Rent(174);
+        double[] bmetc = ArrayPool<double>.Shared.Rent(174);
+        double[] bmetd = ArrayPool<double>.Shared.Rent(174);
+        double[] bmetE = ArrayPool<double>.Shared.Rent(174);
+        bool[]   msg77 = ArrayPool<bool>.Shared.Rent(77);
+        bool[]   cw    = ArrayPool<bool>.Shared.Rent(174);
+        // cdShift: the half-bin shifted baseband — pooling is safe because it is
+        // never passed to Fft.InverseInPlace (filled by a manual rotation loop).
+        Complex[] cdShift = ArrayPool<Complex>.Shared.Rent(Nfft2);
+
+        try
         {
-            Complex[] cd = cd0;
-            if (ifreqPass == 1)
+            Array.Clear(msg77, 0, 77);
+            Array.Clear(cw, 0, 174);
+
+            // ─ Try frequency sub-passes: nominal f1 and +half-bin offset ─────────
+            for (int ifreqPass = 0; ifreqPass < 2; ifreqPass++)
             {
-                // Apply +half-bin shift (= +3.125 Hz = half of 6.25 Hz tone spacing)
-                const double halfBin = Baud / 2.0;
-                cd = new Complex[Nfft2];
-                for (int t = 0; t < Nfft2; t++)
+                Complex[] cd = cd0;
+                if (ifreqPass == 1)
                 {
-                    double phi = 2.0 * Math.PI * halfBin * t / 200.0;
-                    double cr = Math.Cos(phi), ci = Math.Sin(phi);
-                    cd[t] = new Complex(
-                        cd0[t].Real * cr - cd0[t].Imaginary * ci,
-                        cd0[t].Real * ci + cd0[t].Imaginary * cr);
-                }
-            }
-
-            // ─ Extract per-symbol spectra ─────────────────────────────────────
-            var cs     = new Complex[NSymbols, 8];
-            var cbuf32 = new Complex[NBase];
-            for (int sym = 0; sym < NSymbols; sym++)
-            {
-                int start = ibest + sym * NBase;
-                for (int i = 0; i < NBase; i++)
-                {
-                    int idx = start + i;
-                    cbuf32[i] = (uint)idx < (uint)cd.Length ? cd[idx] : Complex.Zero;
-                }
-                Fft.ForwardInPlace(cbuf32);
-                for (int tone = 0; tone < 8; tone++)
-                    cs[sym, tone] = cbuf32[tone];
-            }
-
-            var bmeta = new double[174]; var bmetb = new double[174];
-            var bmetc = new double[174]; var bmetd = new double[174];
-            ComputeMultiSymbolBmet(cs, bmeta, bmetb, bmetc, bmetd);
-
-            NormalizeBmet(bmeta); NormalizeBmet(bmetb);
-            NormalizeBmet(bmetc); NormalizeBmet(bmetd);
-
-            // Ensemble LLR: coherent sum of all three multi-symbol variants (each already
-            // normalised to unit-σ). The combined array captures signal contributions from
-            // all three NSym estimates; for signals near the sensitivity threshold it can
-            // decode when no individual variant succeeds alone.
-            var bmetE = new double[174];
-            for (int i = 0; i < 174; i++)
-                bmetE[i] = bmeta[i] + bmetb[i] + bmetc[i];
-            NormalizeBmet(bmetE);
-
-            const double ScaleFac = 3.2;
-            for (int i = 0; i < 174; i++)
-            {
-                bmeta[i] *= ScaleFac; bmetb[i] *= ScaleFac;
-                bmetc[i] *= ScaleFac; bmetd[i] *= ScaleFac;
-                bmetE[i] *= ScaleFac;
-            }
-
-            // Try ensemble first (highest combined information), then individual variants.
-            foreach (double[] llr in (double[][])[bmetE, bmeta, bmetb, bmetc, bmetd])
-            {
-                bool ok = Ldpc174_91.TryDecode(llr, apMask, Options.DecoderDepth,
-                                                msg77, cw, out int hardErrors, out double dmin);
-                // Reject OSD false positives (phantoms).  Mirrors WSJT-X ft8b.f90 line 422:
-                // "if(nharderrors.lt.0 .or. nharderrors.gt.36) cycle".
-                // Our confirmed FT8_Single phantoms had errs=38 and errs=40; threshold=37
-                // rejects both while keeping the highest-errs legitimate signals (~36–37).
-                // NOTE: dmin-based filtering was evaluated but discarded — dmin values are not
-                // portable across recordings because they depend on per-recording LLR scaling.
-                if (ok && hardErrors <= 37)
-                {
-                    string message = MessagePacker.Unpack77(msg77, out bool unpkOk);
-                    if (unpkOk && !string.IsNullOrWhiteSpace(message))
+                    // Apply +half-bin shift (= +3.125 Hz = half of 6.25 Hz tone spacing)
+                    const double halfBin = Baud / 2.0;
+                    for (int t = 0; t < Nfft2; t++)
                     {
-                        // cs[0] uses the nominal cd0 (not shifted) for subtraction accuracy.
-                        var cs0 = (ifreqPass == 0) ? cs : ExtractCs(cd0, ibest);
-                        info = new DecodeInfo((bool[])cw.Clone(), f1, ibest, cs0);
-                        result = new DecodeResult
-                        {
-                            UtcTime     = utcTime,
-                            Snr         = ComputeSnrDb(cs),
-                            Dt          = dt,
-                            FrequencyHz = freq,
-                            Message     = message.Trim(),
-                            Mode        = DigitalMode.FT8,
-                            HardErrors  = hardErrors,
-                            Dmin        = dmin,
-                        };
-                        return true;
+                        double phi = 2.0 * Math.PI * halfBin * t / 200.0;
+                        double cr = Math.Cos(phi), ci = Math.Sin(phi);
+                        cdShift[t] = new Complex(
+                            cd0[t].Real * cr - cd0[t].Imaginary * ci,
+                            cd0[t].Real * ci + cd0[t].Imaginary * cr);
                     }
+                    cd = cdShift;
                 }
-                Array.Clear(msg77, 0, msg77.Length);
-                Array.Clear(cw,    0, cw.Length);
+
+                // ─ Extract per-symbol spectra ─────────────────────────────────────
+                var cs     = new Complex[NSymbols, 8];
+                var cbuf32 = new Complex[NBase];
+                for (int sym = 0; sym < NSymbols; sym++)
+                {
+                    int start = ibest + sym * NBase;
+                    for (int i = 0; i < NBase; i++)
+                    {
+                        int idx = start + i;
+                        cbuf32[i] = (uint)idx < (uint)Nfft2 ? cd[idx] : Complex.Zero;
+                    }
+                    Fft.ForwardInPlace(cbuf32);
+                    for (int tone = 0; tone < 8; tone++)
+                        cs[sym, tone] = cbuf32[tone];
+                }
+
+                ComputeMultiSymbolBmet(cs, bmeta, bmetb, bmetc, bmetd);
+
+                NormalizeBmet(bmeta); NormalizeBmet(bmetb);
+                NormalizeBmet(bmetc); NormalizeBmet(bmetd);
+
+                for (int i = 0; i < 174; i++)
+                    bmetE[i] = bmeta[i] + bmetb[i] + bmetc[i];
+                NormalizeBmet(bmetE);
+
+                const double ScaleFac = 3.2;
+                for (int i = 0; i < 174; i++)
+                {
+                    bmeta[i] *= ScaleFac; bmetb[i] *= ScaleFac;
+                    bmetc[i] *= ScaleFac; bmetd[i] *= ScaleFac;
+                    bmetE[i] *= ScaleFac;
+                }
+
+                // Try ensemble first, then individual variants.
+                ReadOnlySpan<double[]> llrVariants = [bmetE, bmeta, bmetb, bmetc, bmetd];
+                foreach (double[] llr in llrVariants)
+                {
+                    bool ok = Ldpc174_91.TryDecode(llr, apMask, Options.DecoderDepth,
+                                                    msg77, cw, out int hardErrors, out double dmin);
+                    if (ok && hardErrors <= 37)
+                    {
+                        string message = MessagePacker.Unpack77(msg77, out bool unpkOk);
+                        if (unpkOk && !string.IsNullOrWhiteSpace(message))
+                        {
+                            var cs0 = (ifreqPass == 0) ? cs : ExtractCs(cd0, ibest);
+                            info = new DecodeInfo(cw.AsSpan(0, 174).ToArray(), f1, ibest, cs0);
+                            result = new DecodeResult
+                            {
+                                UtcTime     = utcTime,
+                                Snr         = ComputeSnrDb(cs),
+                                Dt          = dt,
+                                FrequencyHz = freq,
+                                Message     = message.Trim(),
+                                Mode        = DigitalMode.FT8,
+                                HardErrors  = hardErrors,
+                                Dmin        = dmin,
+                            };
+                            return true;
+                        }
+                    }
+                    Array.Clear(msg77, 0, 77);
+                    Array.Clear(cw, 0, 174);
+                }
             }
+            return false;
         }
-        return false;
+        finally
+        {
+            ArrayPool<double>.Shared.Return(bmeta);
+            ArrayPool<double>.Shared.Return(bmetb);
+            ArrayPool<double>.Shared.Return(bmetc);
+            ArrayPool<double>.Shared.Return(bmetd);
+            ArrayPool<double>.Shared.Return(bmetE);
+            ArrayPool<bool>.Shared.Return(msg77);
+            ArrayPool<bool>.Shared.Return(cw);
+            ArrayPool<Complex>.Shared.Return(cdShift);
+        }
     }
 
     /// <summary>
@@ -649,11 +665,11 @@ public sealed class Ft8Decoder : BaseDecoder
     // ── WSJT-X ft8_downsample: frequency-domain baseband downsampling ─────────
 
     /// <summary>
-    /// Mixes the full-signal FFT to baseband at f1 Hz and produces a 200 Hz
-    /// complex baseband buffer of NFFT2 samples, exactly matching WSJT-X ft8_downsample.f90.
-    /// The extracted band includes FT8 tones 0–7 (0–43.75 Hz relative to f1) plus margins.
+    /// Mixes the full-signal FFT to baseband at f1 Hz and fills <paramref name="c1"/>
+    /// (length ≥ Nfft2) with the 200 Hz complex baseband buffer, exactly matching
+    /// WSJT-X ft8_downsample.f90.  Caller owns <paramref name="c1"/> (may be pooled).
     /// </summary>
-    private static Complex[] Ft8Downsample(Complex[] fullFft, double f1)
+    private static void Ft8Downsample(Complex[] fullFft, double f1, Complex[] c1)
     {
         const double df = (double)SampleRate / Nfft1; // 0.0625 Hz per bin
 
@@ -661,7 +677,8 @@ public sealed class Ft8Decoder : BaseDecoder
         int ib = Math.Max(1, (int)Math.Round((f1 - 1.5 * Baud) / df));
         int it = Math.Min(Nfft1 / 2, (int)Math.Round((f1 + 8.5 * Baud) / df));
 
-        var c1 = new Complex[Nfft2]; // initialized to zero
+        // Zero the working region — c1 may be a freshly allocated or a pooled array.
+        Array.Clear(c1, 0, Nfft2);
 
         // Copy bins ib..it into c1[0..k-1]
         int k = 0;
@@ -685,24 +702,25 @@ public sealed class Ft8Decoder : BaseDecoder
             }
         }
 
-        // Circular shift: cshift(c1, i0-ib) so that frequency f1 maps to DC (bin 0)
-        // Fortran cshift(arr, shift>0) → result[j] = arr[(j+shift) mod N]
+        // Circular shift: cshift(c1, i0-ib) so that frequency f1 maps to DC (bin 0).
+        // Fortran cshift(arr, shift>0) → result[j] = arr[(j+shift) mod N].
+        // Implemented in-place via 3-reversal (no heap allocation):
+        //   reverse [0..shift-1], reverse [shift..N-1], reverse all → left-rotation by shift.
         int shift = i0 - ib;
-        if (shift > 0)
+        if (shift > 0 && shift < Nfft2)
         {
-            var temp = new Complex[Nfft2];
-            for (int j = 0; j < Nfft2; j++)
-                temp[j] = c1[(j + shift) % Nfft2];
-            Array.Copy(temp, c1, Nfft2);
+            var span = c1.AsSpan(0, Nfft2);
+            span[..shift].Reverse();
+            span[shift..].Reverse();
+            span.Reverse();
         }
 
         // IFFT → complex baseband at 200 Hz (AsymmetricScaling applies 1/Nfft2)
+        // NOTE: c1 must be exactly Nfft2 elements — caller must NOT pass a larger array.
         Fft.InverseInPlace(c1);
         // Scale (factor doesn't matter for NormalizeBmet, but keeps values comparable)
         double fac = Nfft2 / Math.Sqrt((double)Nfft1 * Nfft2); // = sqrt(Nfft2/Nfft1)
         for (int j = 0; j < Nfft2; j++) c1[j] *= fac;
-
-        return c1;
     }
 
     /// <summary>

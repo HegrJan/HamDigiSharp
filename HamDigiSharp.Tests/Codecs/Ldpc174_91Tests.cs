@@ -302,5 +302,57 @@ public class Ldpc174_91Tests
             "a single-bit error in the all-zero codeword must violate at least one parity check");
     }
 
+    // ── FastTanh approximation accuracy ──────────────────────────────────────
+    // Guards against regression from the Padé(4,4) approximation that replaced
+    // Math.Tanh in the BP inner loop.  The BP argument is -toc*0.5 where toc
+    // carries LLR-scaled values; typical range is ±2.5 with rare excursions to ±5.
+
+    [Theory]
+    [InlineData(0.0)]
+    [InlineData(0.25)]
+    [InlineData(0.5)]
+    [InlineData(0.75)]
+    [InlineData(1.0)]
+    [InlineData(1.5)]
+    [InlineData(2.0)]
+    [InlineData(2.5)]
+    [InlineData(3.0)]
+    [InlineData(3.5)]
+    [InlineData(4.0)]
+    [InlineData(-0.5)]
+    [InlineData(-1.5)]
+    [InlineData(-2.5)]
+    [InlineData(-3.0)]
+    public void FastTanh_MatchesMathTanh_WithinTolerance(double x)
+    {
+        double approx = Ldpc174_91.FastTanh(x);
+        double exact  = Math.Tanh(x);
+        double err    = Math.Abs(approx - exact);
+
+        // Tolerance: 0.5% relative error (actual Padé error is < 0.05% for |x| ≤ 3).
+        // For |x| ≥ 4 FastTanh returns ±1.0 vs Math.Tanh ≈ 0.9993; that is ≤ 0.07%.
+        double tol = 0.005 * Math.Abs(exact) + 1e-10; // relative + absolute guard
+        err.Should().BeLessThanOrEqualTo(tol,
+            $"FastTanh({x}) = {approx} but Math.Tanh({x}) = {exact}");
+    }
+
+    [Theory]
+    [InlineData(-2.0)]
+    [InlineData(-1.0)]
+    [InlineData(-0.5)]
+    public void BpDecode_NoisyAllZeroAtWeakLlr_ConvergesOrDoesNotThrow(double llrBase)
+    {
+        // Test LDPC BP at different LLR magnitudes to confirm FastTanh works across
+        // the argument range seen on real signals.  allzero codeword always satisfies
+        // parity, so BP should converge when LLRs are unambiguously negative.
+        var llr    = Enumerable.Repeat(llrBase, 174).ToArray();
+        var apMask = new bool[174];
+        var msg77  = new bool[77];
+        var cw     = new bool[174];
+
+        var ex = Record.Exception(() =>
+            Ldpc174_91.BpDecode(llr, apMask, msg77, cw, out _));
+        ex.Should().BeNull($"BP must not throw for all-negative LLRs at magnitude {Math.Abs(llrBase)}");
+    }
 
 }

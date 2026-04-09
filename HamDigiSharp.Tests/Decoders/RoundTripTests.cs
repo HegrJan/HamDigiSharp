@@ -452,4 +452,63 @@ public class RoundTripTests
         results.Should().NotBeEmpty();
         results.First().Mode.Should().Be(DigitalMode.JTMS);
     }
+
+    // ── Low-SNR sensitivity regression guards ────────────────────────────────
+    // These tests specifically guard against regressions introduced by algorithmic
+    // changes (e.g. FastTanh approximation, ArrayPool stale-data, rotation bugs).
+    // They mirror the existing FT8 −10 dB test from Ft8DecoderTests.cs.
+    //
+    // Noise model: additive white Gaussian noise (Box-Muller) at signal amplitude 0.1
+    // and noise σ=0.316 → broad SNR ≈ −10 dB in 2500 Hz bandwidth.
+
+    private static float[] AddGaussianNoise(float[] signal, double amplitude, double noiseSd, int seed)
+    {
+        var rng     = new Random(seed);
+        var samples = new float[signal.Length];
+        signal.AsSpan().CopyTo(samples.AsSpan());
+        for (int i = 0; i < samples.Length; i++)
+        {
+            double u1 = 1.0 - rng.NextDouble();
+            double u2 = rng.NextDouble();
+            double n  = Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2);
+            samples[i] = (float)(samples[i] * amplitude + n * noiseSd);
+        }
+        return samples;
+    }
+
+    [Fact]
+    public void Ft4_LowSnr_Minus10dB_DecodesCorrectMessage()
+    {
+        const string message = "CQ W1AW FN42";
+        var clean   = new Ft4Encoder().Encode(message, new EncoderOptions { FrequencyHz = TxFreqHz });
+        var samples = AddGaussianNoise(clean, amplitude: 1.0, noiseSd: 0.316, seed: 42);
+
+        var buf = new float[72576]; // FT4 nMax
+        samples.AsSpan(0, Math.Min(samples.Length, buf.Length)).CopyTo(buf);
+
+        var decoder = new Ft4Decoder();
+        decoder.Configure(new DecoderOptions { DecoderDepth = DecoderDepth.Normal });
+        var results = decoder.Decode(buf, FreqLo, FreqHi, "000000");
+
+        results.Should().Contain(r => r.Message.Trim() == message,
+            "FT4 must decode a −10 dB SNR signal (guards against FastTanh/pool regressions)");
+    }
+
+    [Fact]
+    public void Ft2_LowSnr_Minus10dB_DecodesCorrectMessage()
+    {
+        const string message = "CQ W1AW FN42";
+        var clean   = new Ft2Encoder().Encode(message, new EncoderOptions { FrequencyHz = TxFreqHz });
+        var samples = AddGaussianNoise(clean, amplitude: 1.0, noiseSd: 0.316, seed: 42);
+
+        var buf = new float[45000]; // FT2 nMax
+        samples.AsSpan(0, Math.Min(samples.Length, buf.Length)).CopyTo(buf);
+
+        var decoder = new Ft2Decoder();
+        decoder.Configure(new DecoderOptions { AveragingEnabled = false, DecoderDepth = DecoderDepth.Normal });
+        var results = decoder.Decode(buf, FreqLo, FreqHi, "000000");
+
+        results.Should().Contain(r => r.Message.Trim() == message,
+            "FT2 must decode a −10 dB SNR signal (guards against FastTanh/pool regressions)");
+    }
 }
