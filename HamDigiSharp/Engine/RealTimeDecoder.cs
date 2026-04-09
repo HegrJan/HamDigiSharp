@@ -56,12 +56,12 @@ public sealed class RealTimeDecoder : IDisposable
     private float[]                 _resampleBuf = [];  // reused resample output (grows as needed)
 
     // ── Negative-DT guard band ────────────────────────────────────────────────
-    // Carries the last 300 ms of each decoded period into the start of the next
-    // ring buffer so that signals with DT up to −300 ms (started slightly before
-    // the period boundary) are still decoded.  The raw DT reported by the decoder
-    // (relative to buffer start) is corrected by subtracting _guardOffsetSeconds
+    // Carries the last _guardSamples of each decoded period into the start of the next
+    // ring buffer so that signals with negative DT (started slightly before the period
+    // boundary) are still decoded.  Size = NegativeDtGuardFraction × period (default 8%).
+    // The raw DT from the decoder is corrected by subtracting _guardOffsetSeconds
     // so callers always receive DT relative to the UTC period boundary.
-    private readonly int    _guardSamples;        // = 300 ms × _decoderRate
+    private readonly int    _guardSamples;        // = NegativeDtGuardFraction × _samplesPerPeriod
     private readonly double _guardOffsetSeconds;  // = _guardSamples / _decoderRate
 
     // UTC alignment state
@@ -131,6 +131,30 @@ public sealed class RealTimeDecoder : IDisposable
     /// all subsequent decodes are phase-locked to the mode's UTC schedule.
     /// </summary>
     public bool AlignToUtc { get; init; } = true;
+
+    /// <summary>
+    /// Fraction of the mode period carried forward from the previous period as a
+    /// negative-DT guard band (default 0.08 = 8 %).
+    ///
+    /// <para>Signals transmitted slightly before the period boundary (negative DT)
+    /// start in the previous period.  The guard band preserves those leading samples
+    /// so the decoder can recover the full signal regardless of transmitter clock
+    /// offset.</para>
+    ///
+    /// <para>Because the fraction scales with period length, slower modes automatically
+    /// receive a longer absolute guard:
+    /// <list type="bullet">
+    ///   <item>FT2  (3.75 s):  8 % → 300 ms</item>
+    ///   <item>FT4  (7.5 s):   8 % → 600 ms</item>
+    ///   <item>FT8  (15 s):    8 % → 1200 ms</item>
+    /// </list>
+    /// Set a smaller value (e.g. 0.02) to reduce ring-buffer memory; set a larger
+    /// value (up to the 0.25 cap) to accommodate stations with extreme clock drift.
+    /// The FT4/FT2 decoders are input-adaptive and automatically process the full
+    /// buffer, so increasing the fraction does not require any decoder changes.
+    /// </para>
+    /// </summary>
+    public double NegativeDtGuardFraction { get; init; } = 0.08;
 
     /// <summary>
     /// Fraction of a period at which the decode is pre-launched (default 0.90).
@@ -214,14 +238,18 @@ public sealed class RealTimeDecoder : IDisposable
 
         _samplesPerPeriod = PeriodScheduler.SamplesPerPeriod(mode, _decoderRate);
 
-        // 300 ms negative-DT guard band, capped at 1/8 of period.
-        _guardSamples       = Math.Min((int)(_decoderRate * 0.30), _samplesPerPeriod / 8);
-        _guardOffsetSeconds = _guardSamples / (double)_decoderRate;
+        // Negative-DT guard band: NegativeDtGuardFraction × period, capped at 25%.
+        // Default 8% gives 300 ms for FT2, 600 ms for FT4, 1200 ms for FT8 —
+        // slower modes benefit from proportionally more guard without any decoder changes
+        // (Ft4x2DecoderBase is fully adaptive to input length).
+        double guardFraction    = Math.Clamp(NegativeDtGuardFraction, 0.0, 0.25);
+        _guardSamples           = (int)(guardFraction * _samplesPerPeriod);
+        _guardOffsetSeconds     = _guardSamples / (double)_decoderRate;
 
         int slack  = (int)(_decoderRate * 0.2);
         _ring      = new float[_samplesPerPeriod + _guardSamples + slack];
         // Guard band at [0.._guardSamples) is pre-filled with zeros for the first period;
-        // subsequent periods carry the last 300 ms of the previous period here.
+        // subsequent periods carry the last _guardSamples of the previous period here.
         _ringPos   = _guardSamples;
         _aligned   = false;
 

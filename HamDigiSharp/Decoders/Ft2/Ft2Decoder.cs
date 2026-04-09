@@ -19,10 +19,9 @@ namespace HamDigiSharp.Decoders.Ft2;
 /// </summary>
 public sealed class Ft2Decoder : Ft4x2DecoderBase
 {
-    // Nsps=288, NDown=9, NMax=48600, Nfft1=1152, Nss=32, tone spacing=41.67 Hz
-    // NMax=48600=45000+3600: extra 3600 samples (300 ms) extend the search window to
-    // compensate for the 300 ms guard band prepended by RealTimeDecoder, restoring the
-    // original positive-DT coverage (DT ≤ +1.28 s from UTC boundary).
+    // Nsps=288, NDown=9, MinNMax=45000 (3.75 s at 12 kHz), Nfft1=1152, Nss=32,
+    // tone spacing=41.67 Hz.  The decoder is input-adaptive: when RealTimeDecoder
+    // supplies a longer buffer (period + guard band), the full input is processed.
 
     public override DigitalMode Mode => DigitalMode.FT2;
 
@@ -61,7 +60,7 @@ public sealed class Ft2Decoder : Ft4x2DecoderBase
     private int QuantizeFreq(double f) => (int)Math.Round(f * _nfft1 / (double)SampleRate);
 
     public Ft2Decoder()
-        : base(nsps: 288, nDown: 9, nMax: 48600, nfft1: 1152) { }
+        : base(nsps: 288, nDown: 9, nMax: 45000, nfft1: 1152) { }
 
     // ── Decode entry point ────────────────────────────────────────────────────
 

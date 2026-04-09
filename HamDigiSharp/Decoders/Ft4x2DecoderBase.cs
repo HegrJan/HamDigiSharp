@@ -107,9 +107,11 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
 
     protected double[] PrepareBuffer(ReadOnlySpan<float> samples)
     {
-        var dd = new double[_nMax];
-        int len = Math.Min(samples.Length, _nMax);
-        for (int i = 0; i < len; i++) dd[i] = samples[i];
+        // Use the actual input length (at least _nMax) so larger guard bands from
+        // RealTimeDecoder are fully processed rather than silently truncated.
+        int n  = Math.Max(samples.Length, _nMax);
+        var dd = new double[n];
+        for (int i = 0; i < samples.Length; i++) dd[i] = samples[i];
         return dd;
     }
 
@@ -117,8 +119,8 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
 
     protected Complex[] PrecomputeFft(double[] dd)
     {
-        var xFull = new Complex[_nMax];
-        for (int i = 0; i < _nMax; i++) xFull[i] = new Complex(dd[i] * 0.01, 0.0);
+        var xFull = new Complex[dd.Length];
+        for (int i = 0; i < dd.Length; i++) xFull[i] = new Complex(dd[i] * 0.01, 0.0);
         Fft.ForwardInPlace(xFull);
         return xFull;
     }
@@ -134,7 +136,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
         double[] dd, double freqLow, double freqHigh)
     {
         int    nh1   = _nfft1 / 2;
-        int    nhsym = (_nMax - _nfft1) / _nsps;
+        int    nhsym = (dd.Length - _nfft1) / _nsps;
         double df    = (double)SampleRate / _nfft1;
 
         var window = _window;
@@ -153,7 +155,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
                 for (int z = 0; z < _nfft1; z++)
                 {
                     int    idx = ia + z;
-                    double v   = idx < _nMax ? dd[idx] * 0.01 : 0.0;
+                    double v   = idx < dd.Length ? dd[idx] * 0.01 : 0.0;
                     ls.Cbuf[z] = new Complex(v * window[z], 0.0);
                 }
                 Fft.ForwardInPlace(ls.Cbuf);
@@ -192,16 +194,17 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
     /// </summary>
     protected Complex[] GetBaseband(Complex[] xFull, double f0)
     {
-        int    nFft2  = _nMax / _nDown;
-        double dfFull = (double)SampleRate / _nMax;
+        int    n      = xFull.Length;
+        int    nFft2  = n / _nDown;
+        double dfFull = (double)SampleRate / n;
         int    i0     = (int)(f0 / dfFull);
 
         var c1 = new Complex[nFft2];
-        if (i0 >= 0 && i0 <= _nMax / 2) c1[0] = xFull[i0];
+        if (i0 >= 0 && i0 <= n / 2) c1[0] = xFull[i0];
         for (int i = 1; i < nFft2 / 2; i++)
         {
-            if (i0 + i < _nMax / 2) c1[i]         = xFull[i0 + i];
-            if (i0 - i >= 0)        c1[nFft2 - i] = xFull[i0 - i];
+            if (i0 + i < n / 2) c1[i]         = xFull[i0 + i];
+            if (i0 - i >= 0)    c1[nFft2 - i] = xFull[i0 - i];
         }
         double invN = 1.0 / nFft2;
         for (int i = 0; i < nFft2; i++)

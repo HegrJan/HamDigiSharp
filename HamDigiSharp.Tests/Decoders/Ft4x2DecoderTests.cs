@@ -216,13 +216,14 @@ public class Ft4x2DecoderTests
     }
 
     [Fact]
-    public void PrepareBuffer_LargerThanNMax_Truncated()
+    public void PrepareBuffer_LargerThanNMax_UsesFullInput()
     {
         var samples = new float[100000];
         for (int i = 0; i < samples.Length; i++) samples[i] = 1f;
         var dd = T.PrepareBufferPub(samples);
-        dd.Should().HaveCount(72576);
+        dd.Should().HaveCount(100000, "decoder is input-adaptive: larger buffers are fully processed");
         dd[72575].Should().Be(1.0);
+        dd[99999].Should().Be(1.0);
     }
 
     // ── ComputeLlr ────────────────────────────────────────────────────────────
