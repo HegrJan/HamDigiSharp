@@ -332,7 +332,7 @@ public class MessageBuilderTests
     [Fact]
     public void Validate_TooLong_ReturnsFail()
     {
-        string msg = new('A', 20);   // FT8 max = 13
+        string msg = new('A', 23);   // FT8 MaxLength = 22
         MessageBuilder.Validate(msg, DigitalMode.FT8).IsValid.Should().BeFalse();
     }
 

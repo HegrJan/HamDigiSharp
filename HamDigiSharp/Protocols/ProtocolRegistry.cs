@@ -51,7 +51,7 @@ public static class ProtocolRegistry
             "MSK144",
             "Minimum-shift keying, 144 symbols, 1 s period; high-speed meteor scatter",
             freqLow: 200, freqHigh: 2500,
-            constraints: MessageConstraints.Standard(13),
+            constraints: MessageConstraints.Standard(),
             decoder: () => new Msk144Decoder(),
             encoder: () => new Msk144Encoder());
 
@@ -105,7 +105,7 @@ public static class ProtocolRegistry
             "JT6M",
             "JT 6 m meteor, 60 s period; Reed-Solomon, 65-FSK",
             freqLow: 200, freqHigh: 2700,
-            constraints: MessageConstraints.Standard(13),
+            constraints: MessageConstraints.Standard(),
             decoder: () => new Jt6mDecoder(),
             encoder: () => new Jt6mEncoder());
 
@@ -114,7 +114,7 @@ public static class ProtocolRegistry
             "JT65A",
             "JT65 sub-mode A, 60 s period; Reed-Solomon, 65-FSK, 2.69 Hz tone spacing",
             freqLow: 200, freqHigh: 2700,
-            constraints: MessageConstraints.Standard(13),
+            constraints: MessageConstraints.Standard(),
             decoder: () => new Jt65Decoder(DigitalMode.JT65A),
             encoder: () => new Jt65Encoder(DigitalMode.JT65A));
 
@@ -122,7 +122,7 @@ public static class ProtocolRegistry
             "JT65B",
             "JT65 sub-mode B, 60 s period; 65-FSK, 5.38 Hz tone spacing",
             freqLow: 200, freqHigh: 2700,
-            constraints: MessageConstraints.Standard(13),
+            constraints: MessageConstraints.Standard(),
             decoder: () => new Jt65Decoder(DigitalMode.JT65B),
             encoder: () => new Jt65Encoder(DigitalMode.JT65B));
 
@@ -130,7 +130,7 @@ public static class ProtocolRegistry
             "JT65C",
             "JT65 sub-mode C, 60 s period; 65-FSK, 10.77 Hz tone spacing",
             freqLow: 200, freqHigh: 2700,
-            constraints: MessageConstraints.Standard(13),
+            constraints: MessageConstraints.Standard(),
             decoder: () => new Jt65Decoder(DigitalMode.JT65C),
             encoder: () => new Jt65Encoder(DigitalMode.JT65C));
 
@@ -148,7 +148,7 @@ public static class ProtocolRegistry
             "FT8",
             "Weak-signal 8-FSK, 15 s period, LDPC(174,91); the most widely used DX mode",
             freqLow: 200, freqHigh: 3800,
-            constraints: MessageConstraints.Standard(13),
+            constraints: MessageConstraints.Standard(),
             decoder: () => new Ft8Decoder(),
             encoder: () => new Ft8Encoder());
 
@@ -157,7 +157,7 @@ public static class ProtocolRegistry
             "MSKMS",
             "MSK meteor scatter for the 40 m band (alternate sync word), 1 s period",
             freqLow: 200, freqHigh: 2500,
-            constraints: MessageConstraints.Standard(13),
+            constraints: MessageConstraints.Standard(),
             decoder: () => new Msk40Decoder(),
             encoder: () => new Msk40Encoder());
 
@@ -166,7 +166,7 @@ public static class ProtocolRegistry
             "FT4",
             "Weak-signal 4-FSK, 7.5 s period, LDPC(174,91); fast contesting",
             freqLow: 200, freqHigh: 3800,
-            constraints: MessageConstraints.Standard(13),
+            constraints: MessageConstraints.Standard(),
             decoder: () => new Ft4Decoder(),
             encoder: () => new Ft4Encoder());
 
@@ -175,7 +175,7 @@ public static class ProtocolRegistry
             "Q65A",
             "Q65 sub-mode A, 60 s period; 65-FSK LDPC, designed for EME and scatter",
             freqLow: 200, freqHigh: 2700,
-            constraints: MessageConstraints.Standard(13),
+            constraints: MessageConstraints.Standard(),
             decoder: () => new Q65Decoder(DigitalMode.Q65A),
             encoder: () => new Q65Encoder(DigitalMode.Q65A));
 
@@ -183,7 +183,7 @@ public static class ProtocolRegistry
             "Q65B",
             "Q65 sub-mode B, 30 s period; 65-FSK LDPC",
             freqLow: 200, freqHigh: 2700,
-            constraints: MessageConstraints.Standard(13),
+            constraints: MessageConstraints.Standard(),
             decoder: () => new Q65Decoder(DigitalMode.Q65B),
             encoder: () => new Q65Encoder(DigitalMode.Q65B));
 
@@ -191,7 +191,7 @@ public static class ProtocolRegistry
             "Q65C",
             "Q65 sub-mode C, 15 s period; 65-FSK LDPC",
             freqLow: 200, freqHigh: 2700,
-            constraints: MessageConstraints.Standard(13),
+            constraints: MessageConstraints.Standard(),
             decoder: () => new Q65Decoder(DigitalMode.Q65C),
             encoder: () => new Q65Encoder(DigitalMode.Q65C));
 
@@ -199,7 +199,7 @@ public static class ProtocolRegistry
             "Q65D",
             "Q65 sub-mode D, 7.5 s period; 65-FSK LDPC",
             freqLow: 200, freqHigh: 2700,
-            constraints: MessageConstraints.Standard(13),
+            constraints: MessageConstraints.Standard(),
             decoder: () => new Q65Decoder(DigitalMode.Q65D),
             encoder: () => new Q65Encoder(DigitalMode.Q65D));
 
@@ -208,7 +208,7 @@ public static class ProtocolRegistry
             "FT2",
             "Weak-signal 4-FSK, 3.75 s period, LDPC(174,91); fast EME and local scatter (IU8LMC)",
             freqLow: 200, freqHigh: 3800,
-            constraints: MessageConstraints.Standard(13),
+            constraints: MessageConstraints.Standard(),
             decoder: () => new Ft2Decoder(),
             encoder: () => new Ft2Encoder());
 

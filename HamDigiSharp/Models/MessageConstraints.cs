@@ -82,11 +82,13 @@ public sealed class MessageConstraints : IMessageConstraints
     /// <summary>
     /// Standard callsign/grid/report exchange or free-text, used by FT8, FT4, FT2,
     /// SuperFox, JT65A/B/C, Q65A/B/C/D, MSK144, MSKMS, and JT6M.
+    /// Structured exchanges (two callsigns + grid/report) can reach ~20 characters;
+    /// free-text messages are limited to 13 characters by the 77-bit encoding.
     /// </summary>
-    public static MessageConstraints Standard(int maxLength = 13) => new(
+    public static MessageConstraints Standard(int maxLength = 22) => new(
         maxLength,
         StandardChars,
-        $"Callsign/grid exchange or free text (max {maxLength})");
+        $"Callsign/grid exchange (max ~20) or free text (max 13)");
 
     /// <summary>
     /// Free-text format used by ISCAT-A and ISCAT-B.

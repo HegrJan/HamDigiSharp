@@ -175,15 +175,90 @@ public class MessagePack77Tests
 
     [Theory]
     [InlineData("")]                              // empty
-    [InlineData("CQ")]                            // only one token
-    [InlineData("A B C D E")]                     // too many words
-    [InlineData("CQ W1AW FN31 EXTRA WORD")]       // > 4 words
+    [InlineData("CQ W1AW FN31 EXTRA WORD")]       // > 4 words and > 13 chars → no free-text either
     public void TryPack77_InvalidMessages_ReturnFalse(string message)
     {
         var c77 = new bool[77];
         MessagePack77.TryPack77(message, c77).Should().BeFalse(
             $"\"{message}\" should not pack successfully");
     }
+
+    // ── Free-text encoder (i3=0, n3=0) ──────────────────────────────────────
+
+    /// <summary>
+    /// Messages that fail structured parsing but fit ≤13 chars are encoded as free-text
+    /// (i3=0, n3=0) and must round-trip through Unpack77.
+    /// </summary>
+    [Theory]
+    [InlineData("CQ")]
+    [InlineData("TNX 73")]
+    [InlineData("A B C D E")]
+    [InlineData("HELLO WORLD")]
+    [InlineData("CQ CQ CQ")]
+    [InlineData("73 ES GL")]
+    public void TryPack77_FreeText_PacksAndRoundTrips(string message)
+    {
+        var c77 = new bool[77];
+        bool packed = MessagePack77.TryPack77(message, c77);
+        packed.Should().BeTrue($"short free-text \"{message}\" must pack");
+
+        string decoded = new MessagePacker().Unpack77(c77, out bool ok);
+        ok.Should().BeTrue($"free-text decode must succeed for \"{message}\"");
+
+        string normIn  = message.Trim().ToUpperInvariant();
+        string normOut = decoded.Trim().ToUpperInvariant();
+        normOut.Should().Be(normIn, $"free-text round-trip for \"{message}\"");
+    }
+
+    [Theory]
+    [InlineData("THIS IS 14 CHARS")]   // exactly 14 chars — too long for free-text
+    [InlineData("CQ W1AW FN31 EXTRA WORD")]  // > 13 chars and > 4 words
+    public void TryPack77_FreeText_TooLong_ReturnsFalse(string message)
+    {
+        var c77 = new bool[77];
+        // these must fail both structured and free-text paths
+        MessagePack77.TryPack77(message, c77).Should().BeFalse(
+            $"\"{message}\" is too long for free-text and can't be structured");
+    }
+
+    // ── Structured exchange with long callsigns (the reported bug) ───────────
+
+    /// <summary>
+    /// "OK1ICQ OK1TE JN89" is 17 chars — longer than the old MaxLength=13 limit
+    /// but valid as a structured type-1 message.  The UI must now accept it.
+    /// </summary>
+    [Fact]
+    public void TryPack77_StructuredExchange_17Chars_PacksCorrectly()
+    {
+        const string message = "OK1ICQ OK1TE JN89";
+        var c77 = new bool[77];
+        bool packed = MessagePack77.TryPack77(message, c77);
+        packed.Should().BeTrue($"\"{message}\" must pack as a structured exchange");
+
+        string decoded = new MessagePacker().Unpack77(c77, out bool ok);
+        ok.Should().BeTrue("must decode successfully");
+        decoded.Trim().ToUpperInvariant()
+               .Should().Be(message.Trim().ToUpperInvariant(), "round-trip must be lossless");
+    }
+
+    [Theory]
+    [InlineData("W1ABC OK1ICQ JN89")]
+    [InlineData("OK1ICQ W1ABC -12")]
+    [InlineData("OK1ICQ W1ABC RR73")]
+    [InlineData("CQ DX OK1ICQ JN89")]
+    public void TryPack77_StructuredExchange_LongCallsigns_RoundTrip(string message)
+    {
+        var c77 = new bool[77];
+        bool packed = MessagePack77.TryPack77(message, c77);
+        packed.Should().BeTrue($"\"{message}\" must pack as a structured exchange");
+
+        string decoded = new MessagePacker().Unpack77(c77, out bool ok);
+        ok.Should().BeTrue();
+        string norm = string.Join(" ", message.Trim().ToUpperInvariant()
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries));
+        decoded.Trim().ToUpperInvariant().Should().Be(norm);
+    }
+
 
     [Fact]
     public void TryPack77_ShortArray_Throws()

@@ -2,7 +2,8 @@ namespace HamDigiSharp.Codecs;
 
 /// <summary>
 /// Encodes human-readable FT8/FT4/FT2 text messages into 77-bit bool arrays.
-/// Supports Type 1 standard messages (two callsigns + grid/report).
+/// Supports Type 1 structured messages (two callsigns + grid/report), DXpedition,
+/// EU VHF Contest, and free-text (up to 13 characters, i3=0 n3=0 base-42 encoding).
 /// Mirrors MSHV's <c>PackUnpackMsg77::pack77</c> for the encoding direction.
 /// </summary>
 public static class MessagePack77
@@ -37,8 +38,10 @@ public static class MessagePack77
         if (words.Length == 5 && words[1] == "RR73;" && words[3].StartsWith('<'))
             return TryPackDxped(words, c77);
 
-        if (words.Length < 2 || words.Length > 4) return false;
-        return TryPackType1(words, c77);
+        if (words.Length >= 2 && words.Length <= 4 && TryPackType1(words, c77)) return true;
+
+        // Free-text fallback (i3=0, n3=0): up to 13 characters from the base-42 alphabet.
+        return msg.Length <= 13 && TryPackFreeText(msg, c77);
     }
 
     private static bool TryPackType1(string[] words, bool[] c77)
@@ -70,7 +73,7 @@ public static class MessagePack77
             }
 
             n28a = qualN28;
-            n28b = Pack28(words[2]);
+            if (!TryPack28Valid(words[2], out n28b)) return false;
 
             string last4 = words[3];
             if (TryParseGrid4(last4, out int g4))          igrid4 = g4;
@@ -88,8 +91,8 @@ public static class MessagePack77
         }
 
         defaultParse:
-        n28a = Pack28(words[0]);
-        n28b = Pack28(words[1]);
+        if (!TryPack28Valid(words[0], out n28a)) return false;
+        if (!TryPack28Valid(words[1], out n28b)) return false;
 
         if (words.Length >= 3)
         {
@@ -215,7 +218,23 @@ public static class MessagePack77
         return n28;
     }
 
-    /// <summary>Parse a 4-character Maidenhead grid locator into its integer encoding.</summary>
+    /// <summary>
+    /// Packs a token and returns true only if the result represents a recognized special
+    /// token (DE/QRZ/CQ/CQ_*) or a valid callsign.  Returns false for words that contain
+    /// no area digit and are not recognized special tokens, preventing silent fallback to
+    /// n28=0 ("DE") which would corrupt the structured message.
+    /// </summary>
+    private static bool TryPack28Valid(string word, out int n28)
+    {
+        n28 = Pack28(word);
+        // n28=0 means either the literal "DE" was passed, or Pack28 couldn't find an
+        // area digit and fell through to its 0-return fallback (invalid callsign).
+        if (n28 != 0) return true;
+        string t = word.Trim().ToUpperInvariant();
+        return t == "DE";
+    }
+
+
     public static bool TryParseGrid4(string s, out int igrid4)
     {
         igrid4 = 0;
@@ -333,7 +352,38 @@ public static class MessagePack77
         return igrid6 <= 18662399;
     }
 
-    // ihashcall(call, m) — matches WSJT-X Fortran exactly
+    // ── Free-text (i3=0, n3=0) ───────────────────────────────────────────────
+
+    private const string FreeTextAlphabet = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ+-./?";
+
+    /// <summary>
+    /// Packs up to 13 characters into 71 bits using the base-42 alphabet
+    /// (i3=0, n3=0). Short messages are right-padded with spaces.
+    /// </summary>
+    private static bool TryPackFreeText(string msg, bool[] c77)
+    {
+        // Pad or truncate to exactly 13 characters
+        string padded = msg.Length <= 13 ? msg.PadRight(13) : msg[..13];
+
+        UInt128 n = 0;
+        foreach (char ch in padded)
+        {
+            int idx = FreeTextAlphabet.IndexOf(char.ToUpperInvariant(ch));
+            if (idx < 0) return false;
+            n = n * 42 + (UInt128)idx;
+        }
+
+        // n must fit within 71 bits
+        if (n >= ((UInt128)1 << 71)) return false;
+
+        // Store n big-endian in c77[0..70]; c77[71..76] stay 0 (n3=0, i3=0)
+        for (int i = 70; i >= 0; i--)
+            c77[70 - i] = ((n >> i) & 1) == 1;
+
+        return true;
+    }
+
+
     private static int IHashCall(string call, int m)
     {
         const string c38 = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ/";
