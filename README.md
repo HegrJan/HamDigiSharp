@@ -13,7 +13,7 @@ and verified by round-trip testing.
 
 ## Goals
 
-- **Encode + Decode** — full TX and RX sides for all 20 modes; Q65 supports up to 5-period incoherent averaging for EME/weak-signal work
+- **Encode + Decode** — full TX and RX sides for all 20 modes; Q65 supports up to 5-period incoherent averaging and FT4/FT2 support coherent multi-period LLR averaging for weak-signal work
 - **Pure managed** — no FFTW3 or other native dependencies; uses [MathNet.Numerics](https://numerics.mathdotnet.com/)
 - **All 19 MSHV modes + SuperFox** — full encoder and decoder for every mode (see table below)
 - **Extensible** — add new modes by implementing `IDigitalModeDecoder` / `IDigitalModeEncoder`
@@ -38,7 +38,7 @@ and verified by round-trip testing.
 |-------|-------------|
 | [docs/protocols.md](docs/protocols.md) | `ProtocolRegistry`, `IProtocol`, timing helpers |
 | [docs/messaging.md](docs/messaging.md) | `MessageBuilder`, `MessageParser`, parsed message types |
-| [docs/decoding.md](docs/decoding.md) | `DecoderEngine`, `DecoderOptions`, `DecoderDepth`, Q65 averaging |
+| [docs/decoding.md](docs/decoding.md) | `DecoderEngine`, `DecoderOptions`, `DecoderDepth`, Q65/FT4/FT2 averaging |
 | [docs/encoding.md](docs/encoding.md) | `EncoderEngine`, `EncoderOptions`, all message formats |
 | [docs/realtime.md](docs/realtime.md) | `RealTimeDecoder`, audio capture, UTC alignment |
 

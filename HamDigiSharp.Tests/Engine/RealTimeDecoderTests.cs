@@ -732,6 +732,109 @@ public class RealTimeDecoderTests
             "within 12 periods (MRC carry-forward, Costas-gated accumulation)");
     }
 
+    /// <summary>
+    /// Regression: after successfully decoding a strong FT2 signal the accumulator must be
+    /// cleared so that subsequent near-silence does NOT produce a false decode.
+    /// Root cause of user-reported bug: _freqAcc was never cleared after a successful decode,
+    /// so the accumulated LLR from period 1 persisted into period 2 and decoded again.
+    /// Fix: DecodeAveraged calls _freqAcc.Remove(key) after each successful decode.
+    /// </summary>
+    [Fact]
+    public void Ft2_AveragingAfterSilence_NoFalseDecode()
+    {
+        const double freqHz = 882.0;
+        const string msg    = "CQ W1AW FN42";
+
+        var decoder = new HamDigiSharp.Decoders.Ft2.Ft2Decoder();
+        decoder.Configure(new HamDigiSharp.Models.DecoderOptions
+            { DecoderDepth = DecoderDepth.Normal, AveragingEnabled = true });
+
+        float[] clean = new HamDigiSharp.Encoders.Ft2Encoder().Encode(msg,
+            new HamDigiSharp.Models.EncoderOptions { FrequencyHz = freqHz, Amplitude = 0.5f });
+
+        var cleanPadded = new float[48_600];
+        clean.AsSpan(0, Math.Min(clean.Length, 48_600)).CopyTo(cleanPadded);
+
+        // Period 1: strong signal (-5 dB) — should decode.
+        var noisy1  = AddWhiteNoise(cleanPadded, -5.0, seed: 42);
+        var result1 = decoder.Decode(noisy1, freqHz - 200, freqHz + 200, "000001");
+        result1.Any(r => r.Message.Trim().Equals(msg, StringComparison.OrdinalIgnoreCase))
+               .Should().BeTrue("period 1 strong signal must decode");
+
+        // Period 2: pure silence — must NOT produce any decode (accumulator was cleared).
+        var silence  = new float[48_600];
+        var result2  = decoder.Decode(silence, freqHz - 200, freqHz + 200, "000002");
+        result2.Any(r => r.Message.Trim().Equals(msg, StringComparison.OrdinalIgnoreCase))
+               .Should().BeFalse("silence after decode must not re-decode from stale LLR");
+    }
+
+    /// <summary>
+    /// FT4 multi-period averaging: at -18 dB full-band (1 dB below single-period floor of -17 dB)
+    /// the signal should decode within 12 periods.  √12 ≈ +5.4 dB sensitivity gain expected.
+    /// </summary>
+    [Fact]
+    public void Ft4_MultiPeriodAveraging_DecodesAtMinus18dBWithinTwelvePeriods()
+    {
+        const double snrDb  = -18.0;  // full-band; 1 dB below single-period floor
+        const double freqHz = 882.0;
+        const string msg    = "CQ W1AW FN42";
+
+        var decoder = new HamDigiSharp.Decoders.Ft4.Ft4Decoder();
+        decoder.Configure(new HamDigiSharp.Models.DecoderOptions
+            { DecoderDepth = DecoderDepth.Normal, AveragingEnabled = true });
+
+        float[] clean = new HamDigiSharp.Encoders.Ft4Encoder().Encode(msg,
+            new HamDigiSharp.Models.EncoderOptions { FrequencyHz = freqHz, Amplitude = 0.5f });
+
+        var cleanPadded = new float[76_176];
+        clean.AsSpan(0, Math.Min(clean.Length, 76_176)).CopyTo(cleanPadded);
+
+        bool decoded = false;
+        for (int p = 0; p < 12 && !decoded; p++)
+        {
+            var noisy = AddWhiteNoise(cleanPadded, snrDb, seed: 300 + p);
+            var results = decoder.Decode(noisy, freqHz - 200, freqHz + 200, "000000");
+            decoded = results.Any(r => r.Message.Trim().Equals(msg, StringComparison.OrdinalIgnoreCase));
+        }
+
+        decoded.Should().BeTrue(
+            $"FT4 multi-period LLR averaging must decode '{msg}' at {snrDb} dB full-band " +
+            "within 12 periods");
+    }
+
+    /// <summary>
+    /// FT4 regression: after a successful decode the accumulator is cleared so subsequent
+    /// silence does not produce a false decode.
+    /// </summary>
+    [Fact]
+    public void Ft4_AveragingAfterSilence_NoFalseDecode()
+    {
+        const double freqHz = 882.0;
+        const string msg    = "CQ W1AW FN42";
+
+        var decoder = new HamDigiSharp.Decoders.Ft4.Ft4Decoder();
+        decoder.Configure(new HamDigiSharp.Models.DecoderOptions
+            { DecoderDepth = DecoderDepth.Normal, AveragingEnabled = true });
+
+        float[] clean = new HamDigiSharp.Encoders.Ft4Encoder().Encode(msg,
+            new HamDigiSharp.Models.EncoderOptions { FrequencyHz = freqHz, Amplitude = 0.5f });
+
+        var cleanPadded = new float[76_176];
+        clean.AsSpan(0, Math.Min(clean.Length, 76_176)).CopyTo(cleanPadded);
+
+        // Period 1: strong signal (-3 dB) — should decode.
+        var noisy1  = AddWhiteNoise(cleanPadded, -3.0, seed: 42);
+        var result1 = decoder.Decode(noisy1, freqHz - 200, freqHz + 200, "000001");
+        result1.Any(r => r.Message.Trim().Equals(msg, StringComparison.OrdinalIgnoreCase))
+               .Should().BeTrue("period 1 strong FT4 signal must decode");
+
+        // Period 2: silence — must not re-decode.
+        var silence = new float[76_176];
+        var result2 = decoder.Decode(silence, freqHz - 200, freqHz + 200, "000002");
+        result2.Any(r => r.Message.Trim().Equals(msg, StringComparison.OrdinalIgnoreCase))
+               .Should().BeFalse("silence after FT4 decode must not re-decode from stale LLR");
+    }
+
     // ── Shared helper ────────────────────────────────────────────────────────
 
     private async Task RtNoisyTest(

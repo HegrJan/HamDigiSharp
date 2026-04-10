@@ -20,10 +20,11 @@ public class Ft4x2DecoderTests
         public Tester() : base(nsps: 576, nDown: 18, nMax: 72576, nfft1: 1152) { }
 
         public override DigitalMode Mode => DigitalMode.FT4;
+        protected override int MinCostasMatches => 4;
 
         public override IReadOnlyList<DecodeResult> Decode(
             ReadOnlySpan<float> s, double fl, double fh, string t)
-            => Array.Empty<DecodeResult>();
+            => base.Decode(s, fl, fh, t);
 
         // Expose protected / internal helpers for testing
         public double[] PrepareBufferPub(ReadOnlySpan<float> s)         => PrepareBuffer(s);

@@ -68,6 +68,8 @@ var results = engine.Decode(samples, DigitalMode.FT8, freqLow: 200, freqHigh: 30
 | `MaxCandidates` | `int` | `500` | Sync candidates per period |
 | `MinSyncDb` | `float` | `2.5` | Minimum sync score to attempt decode |
 | `QsoProgress` | `QsoProgress` | `None` | AP bias toward expected exchange tokens |
+| `AveragingEnabled` | `bool` | `true` | Accumulate LLRs across consecutive periods (FT4, FT2, Q65) |
+| `AveragingPeriods` | `int` | `3` | Max periods to accumulate (Q65 only; FT4/FT2 accumulate until decode) |
 
 ### DecoderDepth
 
@@ -126,6 +128,39 @@ for (int i = 0; i < 5; i++)
     if (r.Count > 0) break;  // decoded — no need for more averages
 }
 ```
+
+---
+
+## FT4 / FT2 multi-period averaging
+
+FT4 and FT2 support coherent LLR averaging across consecutive periods using the same
+mechanism. When `AveragingEnabled` is `true` (the default) the decoder accumulates
+normalised log-likelihood ratios at each candidate frequency. LDPC is retried after
+every period, so a decode that fails on a single pass can succeed once enough periods
+have been averaged.
+
+```csharp
+// AveragingEnabled = true is the default — just create and configure once.
+var decoder = ProtocolRegistry.Get(DigitalMode.FT4).CreateDecoder();
+decoder.Configure(new DecoderOptions { DecoderDepth = DecoderDepth.Normal });
+
+// Feed consecutive periods; the decoder accumulates internally.
+foreach (var period in periods)
+{
+    var results = decoder.Decode(period, 200, 3000, utcTime);
+    foreach (var r in results) Console.WriteLine(r);
+    // Accumulator is cleared automatically after each successful decode, so
+    // stale LLR from a disappeared signal cannot produce false decodes.
+}
+```
+
+**Robustness guarantees:**
+- Accumulator cleared immediately after a successful decode.
+- Frequencies not seen for more than 2 consecutive periods are expired and removed.
+- Set `AveragingEnabled = false` (or `ClearAverage = true` on one call) to reset state.
+
+**Expected sensitivity gain:**  each additional period contributes ~1.5 dB (√N law).
+Typical operating range: −17 dB single-period floor → −20 dB with 4 periods averaged.
 
 ---
 

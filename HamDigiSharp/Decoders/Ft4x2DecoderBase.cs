@@ -611,4 +611,310 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
                 cd[t].Real * sinP + cd[t].Imaginary * cosP);
         }
     }
+
+    // ── Abstract contract: subclass-specific Costas threshold ─────────────────
+
+    /// <summary>
+    /// Minimum number of Costas pilot symbols that must match to consider the
+    /// signal present and attempt LDPC decoding.
+    /// FT4 uses 4 (20.83 Hz tone spacing); FT2 uses 6 (41.67 Hz, stricter gate).
+    /// </summary>
+    protected abstract int MinCostasMatches { get; }
+
+    // ── Shared LDPC decode loop ───────────────────────────────────────────────
+
+    /// <summary>
+    /// Tries each LLR variant produced by <see cref="BuildLlrVariants"/> against
+    /// LDPC.  On the first successful decode populates <paramref name="result"/>
+    /// and returns <c>true</c>.  Uses <see cref="BaseDecoder.Mode"/> for the
+    /// result's Mode field, so both FT4 and FT2 get the correct label.
+    /// </summary>
+    protected bool TryLdpcVariants(
+        double[]? llrA, double[]? llrB, double f0, double dt, string utcTime,
+        double[,] s4, ref DecodeResult? result)
+    {
+        var    apMask = EmptyApMask();
+        bool[] msg77  = ArrayPool<bool>.Shared.Rent(77);
+        bool[] cw     = ArrayPool<bool>.Shared.Rent(174);
+        try
+        {
+            foreach (var llr in BuildLlrVariants(llrA, llrB))
+            {
+                Array.Clear(msg77, 0, 77);
+                Array.Clear(cw, 0, 174);
+                bool ok = Ldpc174_91.TryDecode(llr, apMask, Options.DecoderDepth,
+                                                msg77, cw, out int hardErrors, out double dmin);
+                if (!ok || hardErrors > 37) continue;
+
+                for (int i = 0; i < 77; i++) msg77[i] ^= Rvec[i];
+
+                string message = MessagePacker.Unpack77(msg77, out bool unpkOk);
+                if (!unpkOk || string.IsNullOrWhiteSpace(message)) continue;
+
+                result = new DecodeResult
+                {
+                    UtcTime     = utcTime,
+                    Snr         = ComputeSnrDb4Fsk(s4),
+                    Dt          = dt,
+                    FrequencyHz = f0,
+                    Message     = message.Trim(),
+                    Mode        = Mode,
+                    HardErrors  = hardErrors,
+                    Dmin        = dmin,
+                };
+                return true;
+            }
+            return false;
+        }
+        finally
+        {
+            ArrayPool<bool>.Shared.Return(msg77);
+            ArrayPool<bool>.Shared.Return(cw);
+        }
+    }
+
+    // ── Per-candidate single-period decode (5-channel timing + half-tone) ─────
+
+    /// <summary>
+    /// Attempts a single-period decode for the given pre-computed baseband
+    /// <paramref name="c1"/> using 5-channel timing diversity and a half-tone
+    /// frequency sub-pass, then calls <see cref="TryLdpcVariants"/>.
+    /// </summary>
+    protected bool TryDecodeBuffer3Timing(
+        Complex[] c1, int dtBest, double f0, double dt, string utcTime,
+        double[,] s4, ref DecodeResult? result)
+    {
+        double[]? llrTiming = ComputeTimingCombinedLlr(c1, dtBest, MinCostasMatches, s4);
+        if (llrTiming is null) return false;
+
+        int       cdCount = NSymbols * Nss;
+        Complex[] cdBuf   = ArrayPool<Complex>.Shared.Rent(cdCount);
+        Complex[] shifted = ArrayPool<Complex>.Shared.Rent(cdCount);
+        try
+        {
+            FillAtOffset(c1, dtBest, cdBuf, cdCount);
+            FillShiftedByHalfTone(cdBuf, Nss, shifted, cdCount);
+            double[]? llrHalfTone = ComputeLlr(shifted, new double[NSymbols, NBins], MinCostasMatches);
+            return TryLdpcVariants(llrTiming, llrHalfTone, f0, dt, utcTime, s4, ref result);
+        }
+        finally
+        {
+            ArrayPool<Complex>.Shared.Return(cdBuf);
+            ArrayPool<Complex>.Shared.Return(shifted);
+        }
+    }
+
+    // ── Multi-period LLR averaging (FT4 and FT2) ─────────────────────────────
+    //
+    // Coherent MRC in the log-likelihood domain:
+    //   Each period contributes unit-RMS-normalised ensemble-E LLR.
+    //   After N periods:  LlrSum ≈ N × signal  (or √N × noise).
+    //   → SNR improves as √N per N periods (no phase alignment required).
+    //
+    // Robustness fixes (user-reported false-after-silence bug):
+    //   1. Only accumulate when Costas check passes (signal gate).
+    //   2. Expire accumulators after MaxConsecutiveMisses periods without signal
+    //      (prevents stale LLR from a gone signal from decoding indefinitely).
+    //   3. Clear accumulator immediately after a successful decode (prevents the
+    //      same message from being re-decoded in the next near-silence period).
+
+    private sealed class FreqAccum
+    {
+        public const  int      LlrSize = 174;
+        public readonly double[] LlrSum  = new double[LlrSize];
+        public int    Periods;
+        public int    ConsecutiveMisses;
+        public double LastFreq;
+        public double LastDt;
+        public double LastSnr;
+    }
+
+    // Two consecutive missed periods ≈ one TX/RX round-trip for all modes.
+    private const int MaxConsecutiveMisses = 2;
+
+    private readonly Dictionary<int, FreqAccum> _freqAcc = new();
+    private int QuantizeFreq(double f) => (int)Math.Round(f * _nfft1 / (double)SampleRate);
+
+    private List<double> AllFrequenciesInRange(double freqLow, double freqHigh)
+    {
+        double df     = (double)SampleRate / _nfft1;
+        var    result = new List<double>();
+        for (double f = freqLow; f <= freqHigh; f += df)
+            result.Add(f);
+        return result;
+    }
+
+    /// <summary>Resets the multi-period averaging accumulator.</summary>
+    protected void ClearAveraging() => _freqAcc.Clear();
+
+    /// <summary>
+    /// Decodes using coherent multi-period LLR averaging.
+    /// See class-level comment above for algorithm and robustness guarantees.
+    /// </summary>
+    private void DecodeAveraged(
+        Complex[] xFull, double freqLow, double freqHigh, string utcTime,
+        HashSet<string> decoded, List<DecodeResult> results)
+    {
+        var phase1Freqs = AllFrequenciesInRange(freqLow, freqHigh);
+        if (phase1Freqs.Count == 0 && _freqAcc.Count == 0) return;
+
+        // Phase 1a (parallel): compute ensemble-E unit-RMS LLR per frequency.
+        // Frequencies where the Costas check fails return null and are NOT accumulated.
+        var phase1 = phase1Freqs
+            .AsParallel()
+            .Select(freq =>
+            {
+                var    s4     = new double[NSymbols, NBins];
+                var    c1     = GetBaseband(xFull, freq);
+                int    dtBest = FindBestTimingOffset(c1, c1.Length);
+                double dt     = dtBest * _nDown / (double)SampleRate;
+
+                double[]? llrT = ComputeTimingCombinedLlr(c1, dtBest, MinCostasMatches, s4);
+                if (llrT is null)
+                    return (freq, (double[]?)null, 0.0, 0.0);
+
+                int       cdCount2 = NSymbols * Nss;
+                Complex[] cdBuf2   = ArrayPool<Complex>.Shared.Rent(cdCount2);
+                Complex[] shifted2 = ArrayPool<Complex>.Shared.Rent(cdCount2);
+                double[]? llrHT;
+                try
+                {
+                    FillAtOffset(c1, dtBest, cdBuf2, cdCount2);
+                    FillShiftedByHalfTone(cdBuf2, Nss, shifted2, cdCount2);
+                    llrHT = ComputeLlr(shifted2, new double[NSymbols, NBins], MinCostasMatches);
+                }
+                finally
+                {
+                    ArrayPool<Complex>.Shared.Return(cdBuf2);
+                    ArrayPool<Complex>.Shared.Return(shifted2);
+                }
+
+                var nA = RmsNorm(llrT);
+                var nB = RmsNorm(llrHT);
+                double[]? best;
+                if (nA is not null && nB is not null)
+                {
+                    var e = new double[nA.Length];
+                    for (int i = 0; i < nA.Length; i++) e[i] = nA[i] + nB[i];
+                    best = RmsNorm(e);
+                }
+                else best = nA ?? nB;
+
+                return (freq, best, dt, ComputeSnrDb4Fsk(s4));
+            })
+            .Where(r => r.Item2 is not null)
+            .ToList();
+
+        // Keys of quantized frequencies with signal this period.
+        var activeKeys = new HashSet<int>(phase1.Select(r => QuantizeFreq(r.freq)));
+
+        // Phase 1b (sequential): update per-frequency accumulators.
+        foreach (var (freq, normLlr, dt, snr) in phase1)
+        {
+            int key = QuantizeFreq(freq);
+            if (!_freqAcc.TryGetValue(key, out var fa))
+                _freqAcc[key] = fa = new FreqAccum();
+            for (int i = 0; i < FreqAccum.LlrSize; i++)
+                fa.LlrSum[i] += normLlr![i];
+            fa.Periods++;
+            fa.ConsecutiveMisses = 0;
+            fa.LastFreq          = freq;
+            fa.LastDt            = dt;
+            fa.LastSnr           = snr;
+        }
+
+        // Expire stale accumulators that missed too many consecutive periods.
+        var toExpire = new List<int>();
+        foreach (var kvp in _freqAcc)
+        {
+            if (activeKeys.Contains(kvp.Key)) continue;
+            if (++kvp.Value.ConsecutiveMisses > MaxConsecutiveMisses)
+                toExpire.Add(kvp.Key);
+        }
+        foreach (var k in toExpire) _freqAcc.Remove(k);
+
+        // Phase 2 (parallel): attempt LDPC decode from all accumulated frequencies.
+        // Snapshot keys first; _freqAcc is read-only during PLINQ, safe for concurrent reads.
+        var keysToTry  = _freqAcc.Keys.ToList();
+        var rawResults = keysToTry
+            .AsParallel()
+            .Select(key =>
+            {
+                if (!_freqAcc.TryGetValue(key, out var fa) || fa.Periods == 0)
+                    return (key, (DecodeResult?)null);
+                var scaledLlr = RmsScale(fa.LlrSum, LlrScaleFactor);
+                if (scaledLlr is null) return (key, null);
+
+                var          emptyS4 = new double[NSymbols, NBins];
+                DecodeResult? res    = null;
+                TryLdpcVariants(scaledLlr, null, fa.LastFreq, fa.LastDt, utcTime, emptyS4, ref res);
+                if (res is not null) res = res with { Snr = fa.LastSnr };
+                return (key, res);
+            })
+            .Where(r => r.Item2 is not null)
+            .ToList();
+
+        // Collect results sequentially; clear decoded accumulators to prevent
+        // re-decoding the same message from stale LLR in near-silence periods.
+        foreach (var (key, result) in rawResults.OrderBy(r => r.Item2!.FrequencyHz))
+        {
+            if (decoded.Add(result!.Message))
+            {
+                results.Add(result!);
+                Emit(result!);
+            }
+            _freqAcc.Remove(key);
+        }
+    }
+
+    // ── Decode entry point (shared by FT4 and FT2) ───────────────────────────
+
+    /// <summary>
+    /// Decodes one period of PCM audio.  When <see cref="DecoderOptions.AveragingEnabled"/>
+    /// is <see langword="true"/> uses coherent multi-period LLR averaging; otherwise
+    /// decodes the single period in parallel across all spectrogram candidates.
+    /// </summary>
+    public override IReadOnlyList<DecodeResult> Decode(
+        ReadOnlySpan<float> samples, double freqLow, double freqHigh, string utcTime)
+    {
+        if (samples.Length < _nMax / 4) return Array.Empty<DecodeResult>();
+
+        if (Options.ClearAverage) ClearAveraging();
+
+        double[]  dd    = PrepareBuffer(samples);
+        Complex[] xFull = PrecomputeFft(dd);
+
+        var results = new List<DecodeResult>();
+        var decoded = new HashSet<string>();
+
+        if (!Options.AveragingEnabled)
+        {
+            var candidates = FindCandidates4Fsk(dd, freqLow, freqHigh);
+            if (candidates.Count == 0) return Array.Empty<DecodeResult>();
+
+            var rawResults = candidates
+                .AsParallel()
+                .Select(freq =>
+                {
+                    var    s4Local = new double[NSymbols, NBins];
+                    var    c1      = GetBaseband(xFull, freq);
+                    int    dtBest  = FindBestTimingOffset(c1, c1.Length);
+                    double dt      = dtBest * _nDown / (double)SampleRate;
+                    DecodeResult? r = null;
+                    TryDecodeBuffer3Timing(c1, dtBest, freq, dt, utcTime, s4Local, ref r);
+                    return r;
+                })
+                .Where(r => r is not null)
+                .ToList();
+
+            foreach (var result in rawResults.OrderBy(r => r!.FrequencyHz))
+                if (decoded.Add(result!.Message)) { results.Add(result!); Emit(result!); }
+        }
+        else
+        {
+            DecodeAveraged(xFull, freqLow, freqHigh, utcTime, decoded, results);
+        }
+
+        return results;
+    }
 }
