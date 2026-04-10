@@ -441,7 +441,7 @@ public sealed class Jt65Decoder : BaseDecoder
         const int NBASE = 37 * 36 * 10 * 27 * 27 * 27; // = 262177560
         const string c37 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ ";
 
-        if (ncall >= 267796945) return "DE";
+        if (ncall == 267796945) return "DE";
         if (ncall >= NBASE)
         {
             if (ncall == NBASE + 1) return "CQ";

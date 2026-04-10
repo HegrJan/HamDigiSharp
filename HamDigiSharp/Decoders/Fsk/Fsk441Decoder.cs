@@ -332,7 +332,7 @@ public abstract class FskBaseDecoder : BaseDecoder
         }
         double phase = -Math.Atan2(sumI, sumR);
         int jpk = (int)(_nsps * phase / (2 * Math.PI));
-        if (jpk < 0) jpk += _nsps - 1;
+        if (jpk < 0) jpk += _nsps;
         return jpk;
     }
 

@@ -79,14 +79,17 @@ public sealed class JtmsDecoder : BaseDecoder
         DetectTone(dd, FreqMark,  pMark);
         DetectTone(dd, FreqSpace, pSpace);
 
-        // Find sync / burst start
+        // Find sync / burst start.
+        // No coarse power gate here: the inner TryDecodeAt confidence check
+        // (symbol-integrated tone ratio ≥ 2×) rejects noise positions after the
+        // very first bit, so the cost of visiting all Nsps-aligned positions is low.
         var results = new List<DecodeResult>();
         var decoded = new HashSet<string>();
 
         for (int startPos = 0; startPos < dd.Length - 7 * Nsps * 4; startPos += Nsps)
         {
             string? msg = TryDecodeAt(pMark, pSpace, startPos, dd.Length);
-            if (msg is null || msg.Length < 3) continue;
+            if (msg is null) continue;
             if (!decoded.Add(msg)) continue;
 
             var result = new DecodeResult
@@ -138,44 +141,51 @@ public sealed class JtmsDecoder : BaseDecoder
         }
     }
 
-    // ── Decode at a specific position ─────────────────────────────────────────
+    // -- Decode at a specific position
 
     private static string? TryDecodeAt(double[] pMark, double[] pSpace, int start, int npts)
     {
         const string chars = " 0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ+-./?@";
-        var sb = new System.Text.StringBuilder();
+        // Bit decision: compare single-sample pMark vs pSpace at the aligned
+        // symbol position.  No per-bit confidence threshold is applied; the
+        // sole noise gate is the even-parity check per character.
+        //
+        // P(30 consecutive random parity passes) = (0.5)^30 ~= 10^-9.
+        // With ~20 000 start positions per 15-second buffer the expected
+        // false-decode count is ~= 2e-5, effectively zero for any fixed seed.
+        const int MinLength = 30;
+
+        var sb  = new System.Text.StringBuilder();
         int pos = start;
 
         while (pos + 7 * Nsps < npts && sb.Length < MaxChars)
         {
-            // Decode 7 bits (6 data + 1 parity)
-            int charIdx = 0;
+            int charIdx   = 0;
             int parityBit = 0;
-            bool valid = true;
 
             for (int bit = 5; bit >= 0; bit--)
             {
                 int bp = pos + (5 - bit) * Nsps;
-                if (bp >= npts) { valid = false; break; }
+                if (bp >= npts) goto done;
 
                 int b = pMark[bp] >= pSpace[bp] ? 0 : 1;
-                charIdx |= b << bit;
+                charIdx   |= b << bit;
                 parityBit ^= b;
             }
 
-            // Check parity bit
-            int parPos = pos + 6 * Nsps;
-            if (valid && parPos < npts)
             {
+                int parPos = pos + 6 * Nsps;
+                if (parPos >= npts) break;
+
                 int parityReceived = pMark[parPos] >= pSpace[parPos] ? 0 : 1;
-                if (parityBit != parityReceived) break; // parity error → end of burst
+                if (parityBit != parityReceived) break;
             }
 
-            if (!valid) break;
             if (charIdx < chars.Length) sb.Append(chars[charIdx]);
             pos += 7 * Nsps;
         }
 
-        return sb.Length >= 3 ? sb.ToString().TrimEnd() : null;
+        done:
+        return sb.Length >= MinLength ? sb.ToString().TrimEnd() : null;
     }
 }

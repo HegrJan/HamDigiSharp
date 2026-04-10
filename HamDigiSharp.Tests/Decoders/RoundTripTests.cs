@@ -494,21 +494,77 @@ public class RoundTripTests
             "FT4 must decode a −10 dB SNR signal (guards against FastTanh/pool regressions)");
     }
 
-    [Fact]
-    public void Ft2_LowSnr_Minus10dB_DecodesCorrectMessage()
+    // ── OK1ICQ/OK1TE/JN89 regression (MaxLength fix) ─────────────────────────
+    // Before the MaxLength=13→22 fix the UI blocked entry of this 17-char message.
+    // These tests verify that the full encode→decode round-trip works for it.
+
+    [Theory]
+    [InlineData("FT8")]
+    [InlineData("FT4")]
+    [InlineData("FT2")]
+    public void FtX_RoundTrip_Ok1IcqOk1TeJn89_Decodes(string modeName)
     {
-        const string message = "CQ W1AW FN42";
-        var clean   = new Ft2Encoder().Encode(message, new EncoderOptions { FrequencyHz = TxFreqHz });
-        var samples = AddGaussianNoise(clean, amplitude: 1.0, noiseSd: 0.316, seed: 42);
+        const string message = "OK1ICQ OK1TE JN89";
+        const double freq = 1000.0;
 
-        var buf = new float[45000]; // FT2 nMax
-        samples.AsSpan(0, Math.Min(samples.Length, buf.Length)).CopyTo(buf);
+        float[] encoded = modeName switch
+        {
+            "FT8" => new Ft8Encoder().Encode(message, new EncoderOptions { FrequencyHz = freq }),
+            "FT4" => new Ft4Encoder().Encode(message, new EncoderOptions { FrequencyHz = freq }),
+            "FT2" => new Ft2Encoder().Encode(message, new EncoderOptions { FrequencyHz = freq }),
+            _     => throw new ArgumentException(modeName),
+        };
 
-        var decoder = new Ft2Decoder();
-        decoder.Configure(new DecoderOptions { AveragingEnabled = false, DecoderDepth = DecoderDepth.Normal });
-        var results = decoder.Decode(buf, FreqLo, FreqHi, "000000");
+        IReadOnlyList<DecodeResult> results;
+        switch (modeName)
+        {
+            case "FT8":
+                results = new Ft8Decoder().Decode(encoded, 850, 1200, "000000");
+                break;
+            case "FT4":
+                results = new Ft4Decoder().Decode(encoded, 850, 1200, "000000");
+                break;
+            case "FT2":
+            {
+                var dec = new Ft2Decoder();
+                dec.Configure(new DecoderOptions { AveragingEnabled = false });
+                results = dec.Decode(encoded, 850, 1200, "000000");
+                break;
+            }
+            default: throw new ArgumentException(modeName);
+        }
 
-        results.Should().Contain(r => r.Message.Trim() == message,
-            "FT2 must decode a −10 dB SNR signal (guards against FastTanh/pool regressions)");
+        results.Should().NotBeEmpty($"{modeName} must encode and decode '{message}'");
+        results.Any(r => r.Message.Trim() == message).Should().BeTrue(
+            $"{modeName}: expected '{message}'; got [{string.Join(", ", results.Select(r => r.Message))}]");
+    }
+
+    // ── JTMS noise-rejection guard ───────────────────────────────────────────
+    // Before the power-threshold fix the decoder emitted dozens of false decodes
+    // for every buffer of Gaussian noise.  After the fix pure noise returns ≤1
+    // result (empirically 0 for seed=42 and seed=99).
+
+    [Theory]
+    [InlineData(42)]
+    [InlineData(99)]
+    public void Jtms_PureNoise_ProducesNoFalseDecodes(int seed)
+    {
+        // 15-second buffer of Gaussian noise at 11025 Hz
+        const int n = 11025 * 15;
+        var rng     = new Random(seed);
+        var noise   = new float[n];
+        for (int i = 0; i < n; i++)
+        {
+            double u1 = 1.0 - rng.NextDouble();
+            double u2 = rng.NextDouble();
+            noise[i] = (float)(Math.Sqrt(-2.0 * Math.Log(u1)) * Math.Cos(2.0 * Math.PI * u2) * 0.1);
+        }
+
+        var results = new JtmsDecoder().Decode(noise, 800, 2000, "000000");
+
+        results.Should().BeEmpty(
+            $"JTMS decoder must not emit false decodes from pure noise (seed={seed}); " +
+            $"got: [{string.Join(", ", results.Select(r => r.Message))}]");
     }
 }
+

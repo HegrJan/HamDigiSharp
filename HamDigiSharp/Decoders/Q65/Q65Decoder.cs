@@ -196,9 +196,8 @@ public sealed class Q65Decoder : BaseDecoder
             _symPowHistory.Add(symPow);
         else
         {
-            // Replace the oldest entry (circular)
-            int oldest = (_symPowHistory.Count > 0) ? 0 : 0;
-            _symPowHistory.RemoveAt(oldest);
+            // Replace the oldest entry (FIFO: index 0 is always the oldest)
+            _symPowHistory.RemoveAt(0);
             _symPowHistory.Add(symPow);
         }
     }

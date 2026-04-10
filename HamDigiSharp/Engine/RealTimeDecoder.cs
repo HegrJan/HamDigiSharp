@@ -253,10 +253,11 @@ public sealed class RealTimeDecoder : IDisposable
         _ringPos   = _guardSamples;
         _aligned   = false;
 
-        // LLR averaging across periods is enabled for FT2: unit-RMS-normalised ensemble-E
-        // LLR vectors accumulate across consecutive periods (MRC in the LLR domain), giving
-        // sqrt(N) SNR improvement with N periods — no carrier phase alignment required.
-        _rtOptions.AveragingEnabled = (mode == DigitalMode.FT2);
+        // Real-time path always uses the PLINQ single-period pass (AveragingEnabled=false).
+        // The FT2 multi-period LLR accumulation path scans all ~270 frequency bins in
+        // every call without a spectrogram threshold gate, which is too slow for the
+        // RT latency budget and produces zero decodes on the first period.
+        _rtOptions.AveragingEnabled = false;
         _rtOptions.MaxCandidates    = RtMaxCandidates(mode);
 
         // Create and configure the dedicated fast engine.
