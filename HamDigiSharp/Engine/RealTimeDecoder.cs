@@ -27,6 +27,11 @@ namespace HamDigiSharp.Engine;
 ///         prepare a reply before the next TX slot begins.</item>
 ///   <item>At each period boundary fires <see cref="PeriodDecoded"/> with all
 ///         decode results (from the fast engine + six parallel decoder instances).</item>
+///   <item><b>Cross-period AP state</b>: after each decoded period, scans results for
+///         messages directed to <see cref="RealTimeOptions"/>.<c>MyCall</c> and
+///         automatically updates <c>HisCall</c> in the RT engine options.  This
+///         mirrors WSJT-X 3.0 behaviour where the a7 table primes the AP-assisted
+///         decode pass for the next period.</item>
 /// </list>
 ///
 /// <para>
@@ -106,6 +111,13 @@ public sealed class RealTimeDecoder : IDisposable
 
     private DateTimeOffset _windowStart;
     private volatile bool _disposed;
+
+    // ── Cross-period AP state (WSJT-X 3.0 a7 cache) ──────────────────────────
+    // After each period, we remember which callsigns were heard and which station
+    // appeared to be calling MyCall. This primes HisCall for the next period's
+    // AP-assisted decode — matching WSJT-X 3.0 behaviour where a7 keeps the most
+    // recently heard callsigns to guide the CRC-aided AP pass.
+    private string _a7HisCall = string.Empty; // updated after each decoded period
 
     // ── Public surface ────────────────────────────────────────────────────────
 
@@ -458,6 +470,10 @@ public sealed class RealTimeDecoder : IDisposable
                     .OrderByDescending(r => r.Snr)
                     .ToList();
 
+                // Update cross-period AP state: remember which station appeared to be
+                // calling MyCall so AP can prime HisCall for the next period.
+                UpdateA7Cache(unique);
+
                 PeriodDecoded?.Invoke(unique, windowStart);
             }
             catch (Exception ex)
@@ -496,5 +512,77 @@ public sealed class RealTimeDecoder : IDisposable
         PeriodDecoded = null;
         DecodeError   = null;
         _rtEngine.Dispose();
+    }
+
+    // ── Cross-period AP helpers ───────────────────────────────────────────────
+
+    /// <summary>
+    /// Scans <paramref name="results"/> for messages addressed to <see cref="RealTimeOptions"/>.MyCall
+    /// and updates <c>_a7HisCall</c> if a likely QSO partner is identified.
+    ///
+    /// <para>Pattern: "HISCALL MYCALL ..." where MYCALL or MYCALL-stripped-suffix matches.
+    /// The highest-SNR such match wins. If no directed message is found and
+    /// <c>_a7HisCall</c> was already set, it is retained (WSJT-X retains a7 for
+    /// several periods).</para>
+    ///
+    /// <para>The updated value is applied to the RT engine's <see cref="DecoderOptions"/>
+    /// before the next period is decoded.</para>
+    /// </summary>
+    private void UpdateA7Cache(IReadOnlyList<DecodeResult> results)
+    {
+        string myCall = _rtOptions.MyCall;
+        if (string.IsNullOrWhiteSpace(myCall)) return;
+
+        // Strip /P, /M, /QRP suffixes for matching
+        string myBase = myCall.Contains('/') ? myCall[..myCall.LastIndexOf('/')] : myCall;
+
+        string bestCall  = string.Empty;
+        double bestSnr   = double.MinValue;
+
+        foreach (var r in results)
+        {
+            // Messages are trimmed later; work on the trimmed form.
+            string msg = r.Message.Trim();
+            if (msg.Length < 3) continue;
+
+            // Split on whitespace: call1 call2 ...
+            int sp1 = msg.IndexOf(' ');
+            if (sp1 <= 0) continue;
+            int sp2 = msg.IndexOf(' ', sp1 + 1);
+            string call1 = sp2 > 0 ? msg[..sp1] : string.Empty;
+            string call2 = sp2 > 0 ? msg[(sp1 + 1)..sp2] : msg[(sp1 + 1)..];
+
+            // Check if call2 is MyCall (directed to me): "HISCALL MYCALL ..."
+            if (!IsMyCall(call2, myCall, myBase)) continue;
+
+            if (r.Snr > bestSnr && call1.Length >= 3 && !call1.StartsWith("CQ", StringComparison.OrdinalIgnoreCase))
+            {
+                bestSnr  = r.Snr;
+                bestCall = call1;
+            }
+        }
+
+        if (bestCall.Length > 0)
+        {
+            _a7HisCall = bestCall;
+            // Apply immediately so the next early-decode pass uses the updated HisCall.
+            ApplyA7ToEngine();
+        }
+    }
+
+    private static bool IsMyCall(string candidate, string myCall, string myBase)
+    {
+        if (string.Equals(candidate, myCall, StringComparison.OrdinalIgnoreCase)) return true;
+        if (string.Equals(candidate, myBase, StringComparison.OrdinalIgnoreCase)) return true;
+        // Allow "<HASH>" wildcards — these are never a match for MyCall
+        return false;
+    }
+
+    private void ApplyA7ToEngine()
+    {
+        if (string.IsNullOrEmpty(_a7HisCall)) return;
+        // Mutate the options object: HisCall is the only a7 field updated here.
+        _rtOptions.HisCall = _a7HisCall;
+        _rtEngine.Configure(_rtOptions);
     }
 }

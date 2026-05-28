@@ -692,6 +692,10 @@ public sealed class Ft8Decoder : BaseDecoder
     /// Estimates signal SNR in dB relative to a 2500 Hz noise reference bandwidth,
     /// using the 21 Costas pilot symbols whose tones are known a priori.
     /// Matches the WSJT-X SNR scale (0 dB ≈ noise floor in 2500 Hz BW).
+    ///
+    /// <para>xbase (WSJT-X 3.0): the 5th percentile of all 79×8 = 632 per-tone powers
+    /// in <paramref name="cs"/> gives a global noise-floor baseline that prevents
+    /// artificially low SNR in crowded bands where all adjacent tones carry signals.</para>
     /// </summary>
     private static double ComputeSnrDb(Complex[,] cs)
     {
@@ -714,10 +718,65 @@ public sealed class Ft8Decoder : BaseDecoder
                 count++;
             }
         }
-        // Signal power per pilot, noise power per tone per pilot, then normalise
+
+        // xbase: 5th percentile of all per-tone powers in cs (WSJT-X 3.0 noise-floor estimate).
+        // Prevents SNR inflation in crowded bands where adjacent tones carry other signals.
+        double xbase = ComputeXbase(cs);
+
+        // Signal power per pilot, noise power per tone per pilot (floored at xbase), then normalise
         // to 2500 Hz BW (tone spacing = 6.25 Hz → 2500/6.25 = 400).
-        double snrRaw = (sigSum / count) / (noiseSum / (count * 7) + 1e-20);
+        double adjNoise = noiseSum / (count * 7);
+        double noiseEst = Math.Max(adjNoise, xbase) + 1e-20;
+        double snrRaw   = (sigSum / count) / noiseEst;
         return Math.Round(Math.Max(-30.0, 10.0 * Math.Log10(snrRaw / 400.0)));
+    }
+
+    /// <summary>
+    /// Computes the 5th-percentile power across all 79 × 8 = 632 per-tone magnitudes in
+    /// <paramref name="cs"/>.  This is the xbase noise-floor estimate used by WSJT-X 3.0
+    /// to prevent SNR inflation when all adjacent tones carry competing signals.
+    /// </summary>
+    private static double ComputeXbase(Complex[,] cs)
+    {
+        const int Total = NSymbols * 8;  // 79 × 8 = 632
+        Span<double> pows = stackalloc double[Total];
+        int idx = 0;
+        for (int sym = 0; sym < NSymbols; sym++)
+            for (int t = 0; t < 8; t++)
+                pows[idx++] = cs[sym, t].Real   * cs[sym, t].Real
+                            + cs[sym, t].Imaginary * cs[sym, t].Imaginary;
+
+        // Partial sort: find the value at the 5th percentile index (index 31 of 632).
+        // Use a simple selection approach: find the 5th-percentile index.
+        int pctIdx = Total / 20;  // floor(632 * 0.05) = 31
+        return Percentile5(pows, pctIdx);
+    }
+
+    /// <summary>Nth-smallest value (0-based index) in <paramref name="values"/> via partial QuickSelect.</summary>
+    private static double Percentile5(Span<double> values, int kth)
+    {
+        // Copy to avoid mutating pows on the stack (MemoryMarshal would alias, so explicit copy)
+        double[] arr = values.ToArray();
+        return QuickSelect(arr, 0, arr.Length - 1, kth);
+    }
+
+    private static double QuickSelect(double[] a, int lo, int hi, int k)
+    {
+        while (lo < hi)
+        {
+            double pivot = a[(lo + hi) >> 1];
+            int i = lo, j = hi;
+            while (i <= j)
+            {
+                while (a[i] < pivot) i++;
+                while (a[j] > pivot) j--;
+                if (i <= j) { (a[i], a[j]) = (a[j], a[i]); i++; j--; }
+            }
+            if (k <= j) hi = j;
+            else if (k >= i) lo = i;
+            else return a[k];
+        }
+        return a[lo];
     }
 
     // Extracts cs[79,8] from cd0 at the given ibest — used when the freq-shift pass succeeds.
