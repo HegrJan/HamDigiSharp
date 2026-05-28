@@ -451,61 +451,67 @@ public sealed class RealTimeDecoder : IDisposable, IAsyncDisposable
     private void LaunchDecodeTask(
         Task<IReadOnlyList<DecodeResult>>? primaryTask, DateTimeOffset windowStart)
     {
-        var t = Task.Run(async () =>
+        // Assign _activeDecodeTask while holding _pendingLock so the task's finally
+        // block cannot clear it before we store the reference.  Without this,
+        // a task whose primaryTask is null (no await, synchronous body) can complete
+        // and execute its finally block on the thread pool between Task.Run returning
+        // and a subsequent standalone lock(_pendingLock){ _activeDecodeTask = t; }.
+        lock (_pendingLock)
         {
-            try
+            _activeDecodeTask = Task.Run(async () =>
             {
-                IReadOnlyList<DecodeResult> rawResults = Array.Empty<DecodeResult>();
-                if (primaryTask is not null)
-                    rawResults = await primaryTask;
-
-                // Correct DT: the buffer fed to the decoder starts _guardOffsetSeconds before
-                // the UTC period boundary, so raw DT values are offset by that amount.
-                // Subtracting _guardOffsetSeconds gives DT relative to the period boundary.
-                var corrected = _guardOffsetSeconds > 0 && rawResults.Count > 0
-                    ? (IEnumerable<DecodeResult>)rawResults.Select(r => r with { Dt = r.Dt - _guardOffsetSeconds })
-                    : rawResults;
-
-                var unique = corrected
-                    .GroupBy(r => r.Message, StringComparer.Ordinal)
-                    .Select(g => g.OrderByDescending(r => r.Snr).First())
-                    .OrderByDescending(r => r.Snr)
-                    .ToList();
-
-                // Update cross-period AP state: remember which station appeared to be
-                // calling MyCall so AP can prime HisCall for the next period.
-                UpdateA7Cache(unique);
-
-                PeriodDecoded?.Invoke(unique, windowStart);
-            }
-            catch (Exception ex)
-            {
-                DecodeError?.Invoke(ex);
-            }
-            finally
-            {
-                // Read and clear _pendingPeriod under the lock, and only clear
-                // _decoding when there is no queued period to launch next.
-                // This eliminates the TOCTOU window that existed when _decoding was
-                // managed with Interlocked outside the lock: a racing FireDecode
-                // call can no longer slip in between the lock release and the
-                // Interlocked clear and have its pending entry silently lost.
-                (Task<IReadOnlyList<DecodeResult>>? task, DateTimeOffset ws)? pending;
-                lock (_pendingLock)
+                try
                 {
-                    pending           = _pendingPeriod;
-                    _pendingPeriod    = null;
-                    _activeDecodeTask = null;
-                    if (!pending.HasValue)
-                        _decoding = false;
-                }
+                    IReadOnlyList<DecodeResult> rawResults = Array.Empty<DecodeResult>();
+                    if (primaryTask is not null)
+                        rawResults = await primaryTask;
 
-                if (pending.HasValue)
-                    LaunchDecodeTask(pending.Value.task, pending.Value.ws);
-            }
-        });
-        // Store the running task so DisposeAsync can await it.
-        lock (_pendingLock) { _activeDecodeTask = t; }
+                    // Correct DT: the buffer fed to the decoder starts _guardOffsetSeconds before
+                    // the UTC period boundary, so raw DT values are offset by that amount.
+                    // Subtracting _guardOffsetSeconds gives DT relative to the period boundary.
+                    var corrected = _guardOffsetSeconds > 0 && rawResults.Count > 0
+                        ? (IEnumerable<DecodeResult>)rawResults.Select(r => r with { Dt = r.Dt - _guardOffsetSeconds })
+                        : rawResults;
+
+                    var unique = corrected
+                        .GroupBy(r => r.Message, StringComparer.Ordinal)
+                        .Select(g => g.OrderByDescending(r => r.Snr).First())
+                        .OrderByDescending(r => r.Snr)
+                        .ToList();
+
+                    // Update cross-period AP state: remember which station appeared to be
+                    // calling MyCall so AP can prime HisCall for the next period.
+                    UpdateA7Cache(unique);
+
+                    PeriodDecoded?.Invoke(unique, windowStart);
+                }
+                catch (Exception ex)
+                {
+                    DecodeError?.Invoke(ex);
+                }
+                finally
+                {
+                    // Read and clear _pendingPeriod under the lock, and only clear
+                    // _decoding when there is no queued period to launch next.
+                    // This eliminates the TOCTOU window that existed when _decoding was
+                    // managed with Interlocked outside the lock: a racing FireDecode
+                    // call can no longer slip in between the lock release and the
+                    // Interlocked clear and have its pending entry silently lost.
+                    (Task<IReadOnlyList<DecodeResult>>? task, DateTimeOffset ws)? pending;
+                    lock (_pendingLock)
+                    {
+                        pending           = _pendingPeriod;
+                        _pendingPeriod    = null;
+                        _activeDecodeTask = null;
+                        if (!pending.HasValue)
+                            _decoding = false;
+                    }
+
+                    if (pending.HasValue)
+                        LaunchDecodeTask(pending.Value.task, pending.Value.ws);
+                }
+            });
+        }
     }
 
     // ── IDisposable / IAsyncDisposable ────────────────────────────────────────
