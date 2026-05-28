@@ -115,6 +115,41 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
         return dd;
     }
 
+    /// <summary>
+    /// Applies WSJT-X 3.0 multi-cycle time-domain smoothing to the sample buffer
+    /// (same algorithm as <c>Ft8Decoder.ApplyCycleSmoothing</c>).
+    ///
+    /// <list type="bullet">
+    ///   <item>Cycle 0: identity — returns the original buffer.</item>
+    ///   <item>Cycle 1: forward average — <c>dd[i] = (orig[i] + orig[i+1]) / 2</c>.
+    ///     Shifts the signal forward by half a sample in time, giving the timing
+    ///     search a slightly different alignment.</item>
+    ///   <item>Cycle 2: backward average — <c>dd[i] = (orig[i-1] + orig[i]) / 2</c>.
+    ///     Shifts the signal backward by half a sample.</item>
+    /// </list>
+    /// Each cycle runs the full candidate search + LDPC path on a fresh FFT so
+    /// that previously missed signals (due to sub-sample timing misalignment) are found.
+    /// </summary>
+    protected static double[] ApplyCycleSmoothing(double[] original, int cycle)
+    {
+        if (cycle == 0) return original; // original buffer; no copy needed (only reads)
+
+        var s = new double[original.Length];
+        if (cycle == 1)
+        {
+            for (int i = 0; i < original.Length - 1; i++)
+                s[i] = (original[i] + original[i + 1]) * 0.5;
+            s[original.Length - 1] = original[original.Length - 1];
+        }
+        else // cycle == 2: backward average
+        {
+            s[0] = original[0];
+            for (int i = 1; i < original.Length; i++)
+                s[i] = (original[i - 1] + original[i]) * 0.5;
+        }
+        return s;
+    }
+
     // ── Full-buffer FFT (computed once per Decode call, shared across candidates) ──
 
     protected Complex[] PrecomputeFft(double[] dd)
@@ -169,7 +204,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
         if (sigThreshold < 1e-20) return new List<double>(); // silence / zero input
         var    candidates   = new List<double>();
 
-        for (double f0 = freqLow; f0 <= freqHigh; f0 += df)
+        for (double f0 = freqLow; f0 <= freqHigh; f0 += df * 0.5)
         {
             double power = 0;
             for (int t = 0; t < 4; t++)
@@ -549,6 +584,10 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
     /// Computes SNR in dB relative to a 2500 Hz noise reference bandwidth,
     /// using power at the expected tone vs. the three noise tones across all
     /// 16 Costas pilot symbols.  Matches the WSJT-X SNR convention.
+    ///
+    /// <para>xbase (WSJT-X 3.0): the 5th percentile of all 16×4 = 64 pilot-symbol
+    /// per-tone magnitudes provides a global noise-floor baseline that prevents
+    /// SNR inflation when adjacent tones carry competing signals (crowded band).</para>
     /// </summary>
     protected double ComputeSnrDb4Fsk(double[,] s4)
     {
@@ -573,10 +612,66 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
             }
         }
 
+        // xbase: 5th percentile of all pilot-symbol per-tone powers (64 values).
+        double xbase = ComputeXbase4Fsk(s4);
+
         // BW factor = 2500 Hz / tone_spacing — same convention as FT8 (uses 2500/6.25=400).
-        double bwFactor = 2500.0 / ToneSpacing;
-        double snrRaw   = (sigSum / count) / (noiseSum / (count * 3) + 1e-20);
+        double bwFactor   = 2500.0 / ToneSpacing;
+        double adjNoise   = noiseSum / (count * 3);
+        double noiseEst   = Math.Max(adjNoise, xbase) + 1e-20;
+        double snrRaw     = (sigSum / count) / noiseEst;
         return Math.Round(Math.Max(-30.0, 10.0 * Math.Log10(snrRaw / bwFactor)));
+    }
+
+    /// <summary>
+    /// Computes the 5th-percentile squared magnitude across all 16 Costas pilot
+    /// symbols × 4 tones = 64 values in <paramref name="s4"/> (s4 holds magnitudes).
+    /// Used as the xbase noise-floor estimate for SNR computation.
+    /// </summary>
+    private static double ComputeXbase4Fsk(double[,] s4)
+    {
+        const int Total = 16 * NBins; // 64
+        Span<double> pows = stackalloc double[Total];
+        int idx = 0;
+        for (int g = 0; g < 4; g++)
+        {
+            int[] cos = AllCostas[g];
+            for (int k = 0; k < 4; k++)
+            {
+                int sym = CostasOffsets[g] + k;
+                if (sym >= NSymbols) { for (int t2 = 0; t2 < NBins; t2++) pows[idx++] = 0; continue; }
+                for (int t = 0; t < NBins; t++)
+                    pows[idx++] = s4[sym, t] * s4[sym, t];
+            }
+        }
+
+        int pctIdx = Total / 20;  // floor(64 * 0.05) = 3
+        return PercentileVal(pows, pctIdx);
+    }
+
+    private static double PercentileVal(Span<double> values, int kth)
+    {
+        double[] arr = values.ToArray();
+        return QuickSelectPow(arr, 0, arr.Length - 1, kth);
+    }
+
+    private static double QuickSelectPow(double[] a, int lo, int hi, int k)
+    {
+        while (lo < hi)
+        {
+            double pivot = a[(lo + hi) >> 1];
+            int i = lo, j = hi;
+            while (i <= j)
+            {
+                while (a[i] < pivot) i++;
+                while (a[j] > pivot) j--;
+                if (i <= j) { (a[i], a[j]) = (a[j], a[i]); i++; j--; }
+            }
+            if (k <= j) hi = j;
+            else if (k >= i) lo = i;
+            else return a[k];
+        }
+        return a[lo];
     }
 
     // ── Frequency half-tone sub-bin pass ─────────────────────────────────────
@@ -942,7 +1037,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
 
                 var          emptyS4 = new double[NSymbols, NBins];
                 DecodeResult? res    = null;
-                TryLdpcVariants(scaledLlr, null, fa.LastFreq, fa.LastDt, utcTime, emptyS4, ref res);
+                TryLdpcVariants(scaledLlr, scaledLlr, fa.LastFreq, fa.LastDt, utcTime, emptyS4, ref res);
                 if (res is not null) res = res with { Snr = fa.LastSnr };
                 return (key, res);
             })
@@ -968,6 +1063,12 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
     /// Decodes one period of PCM audio.  When <see cref="DecoderOptions.AveragingEnabled"/>
     /// is <see langword="true"/> uses coherent multi-period LLR averaging; otherwise
     /// decodes the single period in parallel across all spectrogram candidates.
+    ///
+    /// <para>When <see cref="DecoderOptions.DecoderCycles"/> is 2 or 3, applies WSJT-X 3.0
+    /// multi-cycle time-domain smoothing before each decode pass.  Additional cycles
+    /// find signals whose timing falls between half-sample boundaries, improving
+    /// sensitivity at the cost of 2–3× more compute.  Averaging mode is unaffected
+    /// (averaging already provides its own multi-period diversity).</para>
     /// </summary>
     public override IReadOnlyList<DecodeResult> Decode(
         ReadOnlySpan<float> samples, double freqLow, double freqHigh, string utcTime)
@@ -976,37 +1077,44 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
 
         if (Options.ClearAverage) ClearAveraging();
 
-        double[]  dd    = PrepareBuffer(samples);
-        Complex[] xFull = PrecomputeFft(dd);
+        double[] originalDd = PrepareBuffer(samples);
 
         var results = new List<DecodeResult>();
         var decoded = new HashSet<string>();
 
         if (!Options.AveragingEnabled)
         {
-            var candidates = FindCandidates4Fsk(dd, freqLow, freqHigh);
-            if (candidates.Count == 0) return Array.Empty<DecodeResult>();
+            int cycles = Math.Max(1, Math.Min(3, Options.DecoderCycles));
+            for (int cycle = 0; cycle < cycles; cycle++)
+            {
+                double[]  dd    = ApplyCycleSmoothing(originalDd, cycle);
+                Complex[] xFull = PrecomputeFft(dd);
 
-            var rawResults = candidates
-                .AsParallel()
-                .Select(freq =>
-                {
-                    var    s4Local = new double[NSymbols, NBins];
-                    var    c1      = GetBaseband(xFull, freq);
-                    int    dtBest  = FindBestTimingOffset(c1, c1.Length);
-                    double dt      = dtBest * _nDown / (double)SampleRate;
-                    DecodeResult? r = null;
-                    TryDecodeBuffer3Timing(c1, dtBest, freq, dt, utcTime, s4Local, ref r);
-                    return r;
-                })
-                .Where(r => r is not null)
-                .ToList();
+                var candidates = FindCandidates4Fsk(dd, freqLow, freqHigh);
+                if (candidates.Count == 0) continue;
 
-            foreach (var result in rawResults.OrderBy(r => r!.FrequencyHz))
-                if (decoded.Add(result!.Message)) { results.Add(result!); Emit(result!); }
+                var rawResults = candidates
+                    .AsParallel()
+                    .Select(freq =>
+                    {
+                        var    s4Local = new double[NSymbols, NBins];
+                        var    c1      = GetBaseband(xFull, freq);
+                        int    dtBest  = FindBestTimingOffset(c1, c1.Length);
+                        double dt      = dtBest * _nDown / (double)SampleRate;
+                        DecodeResult? r = null;
+                        TryDecodeBuffer3Timing(c1, dtBest, freq, dt, utcTime, s4Local, ref r);
+                        return r;
+                    })
+                    .Where(r => r is not null)
+                    .ToList();
+
+                foreach (var result in rawResults.OrderBy(r => r!.FrequencyHz))
+                    if (decoded.Add(result!.Message)) { results.Add(result!); Emit(result!); }
+            }
         }
         else
         {
+            Complex[] xFull = PrecomputeFft(originalDd);
             DecodeAveraged(xFull, freqLow, freqHigh, utcTime, decoded, results);
         }
 

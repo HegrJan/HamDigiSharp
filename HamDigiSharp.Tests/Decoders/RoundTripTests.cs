@@ -724,4 +724,126 @@ public class RoundTripTests
         results.Should().Contain(r => r.Message.Trim() == message,
             "FT4 AP-assisted decode with MyCall=K9AN must recover 'W1AW K9AN -07'");
     }
+
+    // ── Multi-cycle smoothing for FT4/FT2 ───────────────────────────────────
+    // Verifies WSJT-X 3.0 ApplyCycleSmoothing works correctly for 4-FSK modes.
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void Ft4_MultiCycle_DecodesCorrectMessage(int cycles)
+    {
+        var encoded = new Ft4Encoder().Encode(TestMsg, new EncoderOptions { FrequencyHz = TxFreqHz });
+        var decoder = new Ft4Decoder();
+        decoder.Configure(new DecoderOptions { DecoderCycles = cycles });
+        var results = decoder.Decode(encoded, FreqLo, FreqHi, "000000");
+
+        results.Should().NotBeEmpty($"FT4 must decode with DecoderCycles={cycles}");
+        results.Any(r => r.Message.Trim() == TestMsg).Should().BeTrue(
+            $"FT4 multi-cycle({cycles}) must recover the original message");
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void Ft2_MultiCycle_DecodesCorrectMessage(int cycles)
+    {
+        var encoded = new Ft2Encoder().Encode(TestMsg, new EncoderOptions { FrequencyHz = TxFreqHz });
+        var decoder = new Ft2Decoder();
+        decoder.Configure(new DecoderOptions { DecoderCycles = cycles, AveragingEnabled = false });
+        var results = decoder.Decode(encoded, FreqLo, FreqHi, "000000");
+
+        results.Should().NotBeEmpty($"FT2 must decode with DecoderCycles={cycles}");
+        results.Any(r => r.Message.Trim() == TestMsg).Should().BeTrue(
+            $"FT2 multi-cycle({cycles}) must recover the original message");
+    }
+
+    [Fact]
+    public void Ft4_MultiCycle_NoDuplicateDecodes()
+    {
+        var encoded = new Ft4Encoder().Encode(TestMsg, new EncoderOptions { FrequencyHz = TxFreqHz });
+        var decoder = new Ft4Decoder();
+        decoder.Configure(new DecoderOptions { DecoderCycles = 3 });
+        var results = decoder.Decode(encoded, FreqLo, FreqHi, "000000");
+
+        var messages = results.Select(r => r.Message.Trim()).ToList();
+        messages.Distinct().Count().Should().Be(messages.Count,
+            "FT4 multi-cycle(3) must not produce duplicate messages");
+    }
+
+    [Fact]
+    public void Ft2_MultiCycle_NoDuplicateDecodes()
+    {
+        var encoded = new Ft2Encoder().Encode(TestMsg, new EncoderOptions { FrequencyHz = TxFreqHz });
+        var decoder = new Ft2Decoder();
+        decoder.Configure(new DecoderOptions { DecoderCycles = 3, AveragingEnabled = false });
+        var results = decoder.Decode(encoded, FreqLo, FreqHi, "000000");
+
+        var messages = results.Select(r => r.Message.Trim()).ToList();
+        messages.Distinct().Count().Should().Be(messages.Count,
+            "FT2 multi-cycle(3) must not produce duplicate messages");
+    }
+
+    // ── Half-bin frequency scan (Decodium 3.0) ───────────────────────────────
+    // Encodes at a frequency exactly halfway between two FFT bins.
+    // Before the half-bin scan (df/2 step), the signal might not rank highly enough;
+    // after the fix there is always a scan point within df/4 of the signal.
+    // nfft1=1152, sr=12000 → df=10.4167 Hz, half-bin offset ≈ 5.21 Hz.
+
+    [Fact]
+    public void Ft4_HalfBinFrequency_DecodeSucceeds()
+    {
+        // df = 12000 / 1152 ≈ 10.4167; half offset = 5.208 Hz
+        const double halfBinFreq = TxFreqHz + 5.208;
+        var encoded = new Ft4Encoder().Encode(TestMsg, new EncoderOptions { FrequencyHz = halfBinFreq });
+        var results = new Ft4Decoder().Decode(encoded, FreqLo, FreqHi, "000000");
+
+        results.Should().Contain(r => r.Message.Trim() == TestMsg,
+            "FT4 must decode a signal at a mid-bin frequency (half-bin scan enabled)");
+    }
+
+    [Fact]
+    public void Ft2_HalfBinFrequency_DecodeSucceeds()
+    {
+        const double halfBinFreq = TxFreqHz + 5.208;
+        var encoded = new Ft2Encoder().Encode(TestMsg, new EncoderOptions { FrequencyHz = halfBinFreq });
+        var decoder = new Ft2Decoder();
+        decoder.Configure(new DecoderOptions { AveragingEnabled = false });
+        var results = decoder.Decode(encoded, FreqLo, FreqHi, "000000");
+
+        results.Should().Contain(r => r.Message.Trim() == TestMsg,
+            "FT2 must decode a signal at a mid-bin frequency (half-bin scan enabled)");
+    }
+
+    // ── xbase SNR (Decodium 3.0) ─────────────────────────────────────────────
+    // Verifies that SNR is always within the valid range [-30, +49] dB and not
+    // spuriously inflated by xbase noise-floor protection.
+
+    [Fact]
+    public void Ft4_XbaseSNR_InValidRange()
+    {
+        var encoded = new Ft4Encoder().Encode(TestMsg, new EncoderOptions { FrequencyHz = TxFreqHz });
+        var results = new Ft4Decoder().Decode(encoded, FreqLo, FreqHi, "000000");
+
+        results.Should().NotBeEmpty("FT4 must decode the clean signal");
+        var match = results.First(r => r.Message.Trim() == TestMsg);
+        match.Snr.Should().BeInRange(-30.0, 49.0,
+            "xbase SNR must be in the WSJT-X valid range [-30, +49] dB");
+    }
+
+    [Fact]
+    public void Ft2_XbaseSNR_InValidRange()
+    {
+        var encoded = new Ft2Encoder().Encode(TestMsg, new EncoderOptions { FrequencyHz = TxFreqHz });
+        var decoder = new Ft2Decoder();
+        decoder.Configure(new DecoderOptions { AveragingEnabled = false });
+        var results = decoder.Decode(encoded, FreqLo, FreqHi, "000000");
+
+        results.Should().NotBeEmpty("FT2 must decode the clean signal");
+        var match = results.First(r => r.Message.Trim() == TestMsg);
+        match.Snr.Should().BeInRange(-30.0, 49.0,
+            "xbase SNR must be in the WSJT-X valid range [-30, +49] dB");
+    }
 }
