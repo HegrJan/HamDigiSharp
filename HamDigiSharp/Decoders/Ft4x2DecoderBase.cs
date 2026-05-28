@@ -415,18 +415,19 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
     }
 
     /// <summary>
-    /// Builds a 3-timing-channel combined LLR vector from symbol arrays extracted at
-    /// <paramref name="dtBest"/>−¼symbol, <paramref name="dtBest"/>, and
-    /// <paramref name="dtBest"/>+¼symbol relative to the Costas-optimal offset.
+    /// Builds a combined LLR vector from 5 timing channels at offsets
+    /// <paramref name="dtBest"/>±Nss/4 and ±Nss/8 relative to the Costas-optimal offset.
     ///
-    /// Algorithm (Decodium "per-channel RMS normalization"):
-    ///   1. Compute LLR at each timing; skip nulls (Costas check failed).
-    ///   2. Normalize each to unit-RMS so that channels of varying SNR contribute
-    ///      equally — prevents the nominal channel from dominating in a fading scenario.
-    ///   3. Sum normalized channels, normalize sum to unit-RMS, scale by LlrScaleFactor.
+    /// Algorithm (Maximum Ratio Combining):
+    ///   1. Compute raw LLR at each timing; skip nulls (Costas check failed).
+    ///   2. Sum raw LLRs without pre-normalization.
+    ///      Channels with better timing alignment produce larger LLR magnitudes and
+    ///      therefore dominate the sum — this is the "free" weighting of MRC.
+    ///      Pre-normalizing to unit-RMS (equal-gain combining) would instead scale up
+    ///      the noisier misaligned channels, which is suboptimal.
+    ///   3. Normalize sum to unit-RMS and scale by LlrScaleFactor.
     ///
-    /// Extended to 5 timing channels (±Nss/4 and ±Nss/8) for broader multipath coverage.
-    /// Duplicate offsets near boundaries are automatically de-duplicated.
+    /// Duplicate offsets near signal boundaries are automatically de-duplicated.
     /// </summary>
     protected double[]? ComputeTimingCombinedLlr(
         Complex[] c1, int dtBest, int minCostasMatches, double[,] s4Nominal)
@@ -435,11 +436,8 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
         int step    = TimingHalfStep;
         int step2   = step / 2;
         int maxDt   = Math.Max(0, nFft2 - NSymbols * Nss);
-        int cdCount = NSymbols * Nss;  // exact element count used from cd buffer
+        int cdCount = NSymbols * Nss;
 
-        // Rent a single cd buffer reused across all timing channels.
-        // Pool returns power-of-2 size (4096 for cdCount=3296) which is safe here:
-        // FillAtOffset and ComputeLlr only access indices 0..cdCount-1.
         Complex[] cdBuf = ArrayPool<Complex>.Shared.Rent(cdCount);
         try
         {
@@ -449,12 +447,10 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
             double[]? llrNom = ComputeLlr(cdBuf, s4Nominal, minCostasMatches);
             if (llrNom is null) return null;
 
-            var channels = new List<double[]>(5);
+            // MRC: collect raw LLRs (no unit-RMS pre-normalization).
+            var channels = new List<double[]>(5) { llrNom };
             var seen     = new HashSet<int> { dtBest };
-            var normNom  = RmsNorm(llrNom);
-            if (normNom is not null) channels.Add(normNom);
 
-            // Four additional timing offsets: ±step and ±step/2; skip duplicates.
             foreach (int off in new[] { dtBest - step, dtBest - step2, dtBest + step2, dtBest + step })
             {
                 int clamped = Math.Clamp(off, 0, maxDt);
@@ -462,10 +458,8 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
 
                 FillAtOffset(c1, clamped, cdBuf, cdCount);
                 var llrOther = ComputeLlr(cdBuf, new double[NSymbols, NBins], minCostasMatches);
-                var norm = RmsNorm(llrOther);
-                if (norm is not null) channels.Add(norm);
+                if (llrOther is not null) channels.Add(llrOther);
             }
-            if (channels.Count == 0) return null;
 
             int n      = channels[0].Length;
             var result = new double[n];
