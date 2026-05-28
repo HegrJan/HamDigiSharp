@@ -48,7 +48,7 @@ namespace HamDigiSharp.Engine;
 /// thread-pool thread; UI applications must marshal back to the UI thread.
 /// </para>
 /// </summary>
-public sealed class RealTimeDecoder : IDisposable
+public sealed class RealTimeDecoder : IDisposable, IAsyncDisposable
 {
     private readonly DecoderEngine  _rtEngine;          // owned, fast-configured
     private readonly DigitalMode    _mode;
@@ -108,6 +108,8 @@ public sealed class RealTimeDecoder : IDisposable
     private bool _decoding;
     private readonly object _pendingLock = new();
     private (Task<IReadOnlyList<DecodeResult>>? task, DateTimeOffset windowStart)? _pendingPeriod;
+    // Tracks the currently running decode task for graceful DisposeAsync drain.
+    private Task? _activeDecodeTask;
 
     private DateTimeOffset _windowStart;
     private volatile bool _disposed;
@@ -449,7 +451,7 @@ public sealed class RealTimeDecoder : IDisposable
     private void LaunchDecodeTask(
         Task<IReadOnlyList<DecodeResult>>? primaryTask, DateTimeOffset windowStart)
     {
-        _ = Task.Run(async () =>
+        var t = Task.Run(async () =>
         {
             try
             {
@@ -491,8 +493,9 @@ public sealed class RealTimeDecoder : IDisposable
                 (Task<IReadOnlyList<DecodeResult>>? task, DateTimeOffset ws)? pending;
                 lock (_pendingLock)
                 {
-                    pending        = _pendingPeriod;
-                    _pendingPeriod = null;
+                    pending           = _pendingPeriod;
+                    _pendingPeriod    = null;
+                    _activeDecodeTask = null;
                     if (!pending.HasValue)
                         _decoding = false;
                 }
@@ -501,10 +504,17 @@ public sealed class RealTimeDecoder : IDisposable
                     LaunchDecodeTask(pending.Value.task, pending.Value.ws);
             }
         });
+        // Store the running task so DisposeAsync can await it.
+        lock (_pendingLock) { _activeDecodeTask = t; }
     }
 
-    // ── IDisposable ───────────────────────────────────────────────────────────
+    // ── IDisposable / IAsyncDisposable ────────────────────────────────────────
 
+    /// <summary>
+    /// Synchronously disposes the decoder.  Any in-flight decode task is abandoned
+    /// (its results are silently discarded).  For a graceful drain use
+    /// <see cref="DisposeAsync"/> instead.
+    /// </summary>
     public void Dispose()
     {
         if (_disposed) return;
@@ -512,6 +522,33 @@ public sealed class RealTimeDecoder : IDisposable
         PeriodDecoded = null;
         DecodeError   = null;
         _rtEngine.Dispose();
+        GC.SuppressFinalize(this);
+    }
+
+    /// <summary>
+    /// Asynchronously disposes the decoder, waiting up to 5 seconds for any
+    /// in-flight decode task to complete before releasing the underlying engine.
+    /// This ensures event handlers are not called after the caller has torn down
+    /// dependent objects.
+    /// </summary>
+    public async ValueTask DisposeAsync()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        PeriodDecoded = null;
+        DecodeError   = null;
+
+        Task? active;
+        lock (_pendingLock) { active = _activeDecodeTask; }
+        if (active is not null)
+        {
+            using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(5));
+            try { await active.WaitAsync(cts.Token).ConfigureAwait(false); }
+            catch (OperationCanceledException) { /* timeout — abandon the task */ }
+        }
+
+        _rtEngine.Dispose();
+        GC.SuppressFinalize(this);
     }
 
     // ── Cross-period AP helpers ───────────────────────────────────────────────

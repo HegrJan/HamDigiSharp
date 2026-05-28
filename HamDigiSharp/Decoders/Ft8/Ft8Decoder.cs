@@ -155,6 +155,10 @@ public sealed class Ft8Decoder : BaseDecoder
 
         var passCandidates = candidates;
 
+        // Reuse this buffer for every subsequent-pass waterfall rebuild;
+        // BuildWaterfall overwrites it completely so no clear is needed.
+        float[] wf2 = new float[MaxBlocks * blockStride];
+
         for (int pass = 0; pass < 3; pass++)
         {
             // Refill the pre-allocated fullFft buffer from current (cleaned) audio.
@@ -196,7 +200,6 @@ public sealed class Ft8Decoder : BaseDecoder
                 SubtractFromSamples(workSamples, info);
 
             // Rebuild waterfall from cleaned audio → find new (previously hidden) candidates.
-            float[] wf2 = new float[MaxBlocks * blockStride];
             BuildWaterfall(workSamples, wf2, minBin, numBins, blockStride);
             passCandidates = FindCandidates(wf2, numBins, blockStride, pass + 1);
         }
@@ -502,15 +505,20 @@ public sealed class Ft8Decoder : BaseDecoder
                 Complex[] cd = cd0;
                 if (ifreqPass == 1)
                 {
-                    // Apply +half-bin shift (= +3.125 Hz = half of 6.25 Hz tone spacing)
+                    // Apply +half-bin shift (= +3.125 Hz = half of 6.25 Hz tone spacing).
+                    // Uses phasor recurrence to avoid N calls to Math.Cos/Sin.
                     const double halfBin = Baud / 2.0;
+                    double dphi = 2.0 * Math.PI * halfBin / 200.0;
+                    double dCos = Math.Cos(dphi), dSin = Math.Sin(dphi);
+                    double cr = 1.0, ci = 0.0;
                     for (int t = 0; t < Nfft2; t++)
                     {
-                        double phi = 2.0 * Math.PI * halfBin * t / 200.0;
-                        double cr = Math.Cos(phi), ci = Math.Sin(phi);
                         cdShift[t] = new Complex(
                             cd0[t].Real * cr - cd0[t].Imaginary * ci,
                             cd0[t].Real * ci + cd0[t].Imaginary * cr);
+                        double ncr = cr * dCos - ci * dSin;
+                        ci = cr * dSin + ci * dCos;
+                        cr = ncr;
                     }
                     cd = cdShift;
                 }

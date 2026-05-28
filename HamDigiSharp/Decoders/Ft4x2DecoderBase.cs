@@ -180,7 +180,8 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
         // Thread-local state bundles both the power accumulator and the FFT work buffer
         // so cbuf is allocated once per thread, not once per loop iteration.
         var lockObj = new object();
-        double[] savg = new double[nh1];
+        double[] savg   = new double[nh1];
+        double   savgSum = 0;
 
         Parallel.For(0, nhsym,
             () => (Accum: new double[nh1], Cbuf: new Complex[_nfft1]),
@@ -198,9 +199,18 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
                     ls.Accum[i] += ls.Cbuf[i].Real * ls.Cbuf[i].Real + ls.Cbuf[i].Imaginary * ls.Cbuf[i].Imaginary;
                 return ls;
             },
-            ls => { lock (lockObj) for (int i = 0; i < nh1; i++) savg[i] += ls.Accum[i]; });
+            ls =>
+            {
+                lock (lockObj)
+                {
+                    double localSum = 0;
+                    for (int i = 0; i < nh1; i++) { savg[i] += ls.Accum[i]; localSum += ls.Accum[i]; }
+                    savgSum += localSum;
+                }
+            });
 
-        double sigThreshold = savg.Average() * 4.0;
+        // sigThreshold: 4× the per-bin average power (avoids a second pass over savg[]).
+        double sigThreshold = (savgSum / nh1) * 4.0;
         if (sigThreshold < 1e-20) return new List<double>(); // silence / zero input
         var    candidates   = new List<double>();
 
@@ -555,6 +565,22 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
         double factor = targetRms / rms;
         for (int i = 0; i < v.Length; i++) out2[i] = v[i] * factor;
         return out2;
+    }
+
+    /// <summary>
+    /// Scales <paramref name="v"/> in-place so that its RMS equals
+    /// <paramref name="targetRms"/>.  No-op if the vector is degenerate.
+    /// Use this to normalize a freshly-allocated scratch buffer to avoid an
+    /// extra allocation compared to <see cref="RmsScale"/>.
+    /// </summary>
+    protected static void RmsScaleInPlace(double[] v, double targetRms)
+    {
+        double sumSq = 0;
+        foreach (var x in v) sumSq += x * x;
+        double rms = Math.Sqrt(sumSq / v.Length);
+        if (rms < 1e-20) return;
+        double factor = targetRms / rms;
+        for (int i = 0; i < v.Length; i++) v[i] *= factor;
     }
 
     // ── Costas pilot quality check ────────────────────────────────────────────
