@@ -461,4 +461,133 @@ public class MessagePack77Tests
         MessagePack77.TryPack77(message, c77).Should().BeFalse(
             $"invalid DXpedition message must not pack: \"{message}\"");
     }
+
+    // ── AP hint builder (BuildApHint77) ─────────────────────────────────────
+
+    [Fact]
+    public void BuildApHint77_None_ReturnsEmptyMask()
+    {
+        var (bits, mask) = MessagePack77.BuildApHint77(MessagePack77.ApType.None, null, null);
+        mask.Should().AllBeEquivalentTo(false, "None type must produce an all-false mask");
+    }
+
+    [Fact]
+    public void BuildApHint77_I3Only_FixesExactly3Bits()
+    {
+        var (bits, mask) = MessagePack77.BuildApHint77(MessagePack77.ApType.I3Only, null, null);
+
+        int fixedCount = mask.Count(b => b);
+        fixedCount.Should().Be(3, "i3=1 fixes exactly 3 bits (bits 74-76)");
+
+        // i3=1 in MSB-first binary 001: bits[74]=false, bits[75]=false, bits[76]=true
+        mask[74].Should().BeTrue(); bits[74].Should().BeFalse();
+        mask[75].Should().BeTrue(); bits[75].Should().BeFalse();
+        mask[76].Should().BeTrue(); bits[76].Should().BeTrue();
+    }
+
+    [Fact]
+    public void BuildApHint77_Call2_FixesCall2AndI3()
+    {
+        var (bits, mask) = MessagePack77.BuildApHint77(
+            MessagePack77.ApType.Call2, null, "W1AW");
+
+        // Bits 29-56 (n28b = 28 bits) + bit 57 (ipb) + bits 74-76 (i3) = 32 bits
+        int fixedCount = mask.Count(b => b);
+        fixedCount.Should().Be(32, "Call2 type must fix 28 (n28b) + 1 (ipb) + 3 (i3) = 32 bits");
+
+        // Bits 74-76 must be fixed as i3=1
+        mask[76].Should().BeTrue(); bits[76].Should().BeTrue();
+
+        // ipb (bit 57) must be fixed as 0
+        mask[57].Should().BeTrue(); bits[57].Should().BeFalse();
+
+        // All bits 29-56 must be fixed (n28b)
+        for (int j = 29; j <= 56; j++)
+            mask[j].Should().BeTrue($"bit {j} (part of n28b) must be in mask");
+
+        // call1 bits (0-28) must NOT be fixed
+        for (int j = 0; j <= 28; j++)
+            mask[j].Should().BeFalse($"bit {j} (call1 / ipa) must not be fixed for Call2 type");
+    }
+
+    [Fact]
+    public void BuildApHint77_Call1Call2_FixesBothCallsignsAndI3()
+    {
+        var (bits, mask) = MessagePack77.BuildApHint77(
+            MessagePack77.ApType.Call1Call2, "K1JT", "W1AW");
+
+        // bits 0-27 (n28a) + bit 28 (ipa) + bits 29-56 (n28b) + bit 57 (ipb) + bits 74-76 (i3)
+        // = 28 + 1 + 28 + 1 + 3 = 61 bits
+        int fixedCount = mask.Count(b => b);
+        fixedCount.Should().Be(61, "Call1Call2 must fix 61 bits");
+
+        // call1 bits must be fixed
+        for (int j = 0; j <= 28; j++)
+            mask[j].Should().BeTrue($"bit {j} (call1 / ipa) must be fixed");
+
+        // call2 bits must be fixed
+        for (int j = 29; j <= 57; j++)
+            mask[j].Should().BeTrue($"bit {j} (call2 / ipb) must be fixed");
+
+        // igrid4 bits must NOT be fixed (only i3 is)
+        for (int j = 58; j <= 73; j++)
+            mask[j].Should().BeFalse($"bit {j} (ir / igrid4) must not be fixed for Call1Call2");
+    }
+
+    [Fact]
+    public void BuildApHint77_Call1Call2Rrr_FixesAllBits()
+    {
+        var (bits, mask) = MessagePack77.BuildApHint77(
+            MessagePack77.ApType.Call1Call2Rrr, "K1JT", "W1AW");
+
+        // All 77 bits fixed: 61 (callsigns) + 1 (ir) + 15 (igrid4) = 77
+        int fixedCount = mask.Count(b => b);
+        fixedCount.Should().Be(77, "Call1Call2Rrr must fix all 77 bits");
+
+        // Verify bits 74-76 represent i3=1 (001 MSB-first)
+        bits[74].Should().BeFalse();
+        bits[75].Should().BeFalse();
+        bits[76].Should().BeTrue();
+    }
+
+    [Fact]
+    public void BuildApHint77_Call2Bits_MatchPack28()
+    {
+        // The n28b bits (29-56) in the AP hint must match what TryPack77 produces
+        // for the same callsign in the call2 position.
+        const string call2 = "OK1TE";
+        var (apBits, apMask) = MessagePack77.BuildApHint77(
+            MessagePack77.ApType.Call2, null, call2);
+
+        // Build a reference message "CQ OK1TE JN89" and pack it
+        var c77 = new bool[77];
+        MessagePack77.TryPack77($"CQ {call2} JN89", c77).Should().BeTrue();
+
+        // The call2 bits (29-56) in AP hint must match the reference pack
+        for (int j = 29; j <= 56; j++)
+        {
+            if (apMask[j])
+                apBits[j].Should().Be(c77[j],
+                    $"AP bit {j} must match reference pack for call2={call2}");
+        }
+    }
+
+    [Fact]
+    public void BuildApHint77_RoundTrip_ApBitsMatchPackedMessage()
+    {
+        // Encode "W1AW OK1TE -07" with TryPack77, then check that
+        // AP type 3 (call1=W1AW, call2=OK1TE) masks exactly match the packed bits.
+        const string msg = "W1AW OK1TE -07";
+        var c77 = new bool[77];
+        MessagePack77.TryPack77(msg, c77).Should().BeTrue();
+
+        var (apBits, apMask) = MessagePack77.BuildApHint77(
+            MessagePack77.ApType.Call1Call2, "W1AW", "OK1TE");
+
+        // For every bit that is masked (known), the AP hint value must match the packed bits
+        for (int j = 0; j < 77; j++)
+            if (apMask[j])
+                apBits[j].Should().Be(c77[j],
+                    $"AP hint bit {j} must match packed message for \"{msg}\"");
+    }
 }

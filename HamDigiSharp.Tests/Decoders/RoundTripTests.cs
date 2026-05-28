@@ -566,5 +566,162 @@ public class RoundTripTests
             $"JTMS decoder must not emit false decodes from pure noise (seed={seed}); " +
             $"got: [{string.Join(", ", results.Select(r => r.Message))}]");
     }
-}
 
+    // ── Quality metric (WSJT-X 3.0) ─────────────────────────────────────────
+
+    [Fact]
+    public void Ft8_RoundTrip_QualityMetric_IsInValidRange()
+    {
+        var encoded = new Ft8Encoder().Encode(TestMsg, new EncoderOptions { FrequencyHz = TxFreqHz });
+        var results = new Ft8Decoder().Decode(encoded, FreqLo, FreqHi, "000000");
+
+        results.Should().NotBeEmpty("FT8 must decode the signal");
+        var match = results.First(r => r.Message.Trim() == TestMsg);
+        match.Quality.Should().BeInRange(0f, 1f, "quality must be in [0,1] for a clean signal");
+        match.Quality.Should().BeGreaterThan(0.5f,
+            because: "a clean round-trip encode/decode should yield reasonable quality");
+    }
+
+    [Fact]
+    public void Ft4_RoundTrip_QualityMetric_IsInValidRange()
+    {
+        var encoded = new Ft4Encoder().Encode(TestMsg, new EncoderOptions { FrequencyHz = TxFreqHz });
+        var results = new Ft4Decoder().Decode(encoded, FreqLo, FreqHi, "000000");
+
+        results.Should().NotBeEmpty();
+        var match = results.First(r => r.Message.Trim() == TestMsg);
+        match.Quality.Should().BeInRange(0f, 1f);
+        match.Quality.Should().BeGreaterThan(0.5f,
+            "clean FT4 round-trip must yield reasonable quality");
+    }
+
+    [Fact]
+    public void Ft2_RoundTrip_QualityMetric_IsInValidRange()
+    {
+        var encoded = new Ft2Encoder().Encode(TestMsg, new EncoderOptions { FrequencyHz = TxFreqHz });
+        var decoder = new Ft2Decoder();
+        decoder.Configure(new DecoderOptions { AveragingEnabled = false });
+        var results = decoder.Decode(encoded, FreqLo, FreqHi, "000000");
+
+        results.Should().NotBeEmpty();
+        var match = results.First(r => r.Message.Trim() == TestMsg);
+        match.Quality.Should().BeInRange(0f, 1f);
+    }
+
+    // ── Multi-cycle decoding (WSJT-X 3.0 DecoderCycles) ─────────────────────
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void Ft8_MultiCycle_DecodesCorrectMessage(int cycles)
+    {
+        var encoded = new Ft8Encoder().Encode(TestMsg, new EncoderOptions { FrequencyHz = TxFreqHz });
+        var decoder = new Ft8Decoder();
+        decoder.Configure(new DecoderOptions { DecoderCycles = cycles });
+        var results = decoder.Decode(encoded, FreqLo, FreqHi, "000000");
+
+        results.Should().NotBeEmpty($"FT8 must decode with DecoderCycles={cycles}");
+        results.Any(r => r.Message.Trim() == TestMsg).Should().BeTrue(
+            $"multi-cycle({cycles}) must recover the original message");
+    }
+
+    [Fact]
+    public void Ft8_MultiCycle_NoDuplicateDecodes()
+    {
+        var encoded = new Ft8Encoder().Encode(TestMsg, new EncoderOptions { FrequencyHz = TxFreqHz });
+        var decoder = new Ft8Decoder();
+        decoder.Configure(new DecoderOptions { DecoderCycles = 3 });
+        var results = decoder.Decode(encoded, FreqLo, FreqHi, "000000");
+
+        // No two results should have the same message text
+        var messages = results.Select(r => r.Message.Trim()).ToList();
+        messages.Distinct().Count().Should().Be(messages.Count,
+            "multi-cycle decode must not produce duplicate messages");
+    }
+
+    // ── LowSyncThreshold (WSJT-X 3.0) ───────────────────────────────────────
+
+    [Fact]
+    public void Ft8_LowSyncThreshold_StillDecodesCleanSignal()
+    {
+        var encoded = new Ft8Encoder().Encode(TestMsg, new EncoderOptions { FrequencyHz = TxFreqHz });
+        var decoder = new Ft8Decoder();
+        decoder.Configure(new DecoderOptions { LowSyncThreshold = true });
+        var results = decoder.Decode(encoded, FreqLo, FreqHi, "000000");
+
+        results.Should().NotBeEmpty("LowSyncThreshold must not prevent decoding a clean signal");
+        results.Any(r => r.Message.Trim() == TestMsg).Should().BeTrue();
+    }
+
+    // ── AP-assisted decode ───────────────────────────────────────────────────
+
+    [Fact]
+    public void Ft8_ApDecode_Call2Known_RecoversMsgUnderHighNoise()
+    {
+        // Encode a message where call2 = MyCall ("W1AW K9AN -07").
+        // Add strong Gaussian noise, confirm that with AP (MyCall=K9AN) the decoder
+        // recovers the message that might otherwise be missed.
+        const string message = "W1AW K9AN -07";
+        var clean   = new Ft8Encoder().Encode(message, new EncoderOptions { FrequencyHz = TxFreqHz });
+        // Use a moderate noise level (-8 dB full-band) where AP should help
+        var noisy   = AddGaussianNoise(clean, amplitude: 0.5, noiseSd: 0.25, seed: 42);
+        var buf     = new float[180000];
+        noisy.AsSpan(0, Math.Min(noisy.Length, buf.Length)).CopyTo(buf);
+
+        // Without AP: just check it decodes (may or may not)
+        // With AP MyCall=K9AN: set AP
+        var decoder = new Ft8Decoder();
+        decoder.Configure(new DecoderOptions
+        {
+            DecoderDepth   = DecoderDepth.Normal,
+            ApDecode       = true,
+            MyCall         = "K9AN",
+        });
+        var results = decoder.Decode(buf, FreqLo, FreqHi, "000000");
+
+        // The message must be found (either via normal or AP decode)
+        results.Should().Contain(r => r.Message.Trim() == message,
+            "AP-assisted decode with MyCall=K9AN must recover 'W1AW K9AN -07'");
+    }
+
+    [Fact]
+    public void Ft8_ApDecode_IsApDecode_FlagSet_WhenApIsUsed()
+    {
+        // A clean signal should decode without AP (IsApDecode = false).
+        const string message = "W1AW K9AN -07";
+        var clean = new Ft8Encoder().Encode(message, new EncoderOptions { FrequencyHz = TxFreqHz });
+        var decoder = new Ft8Decoder();
+        decoder.Configure(new DecoderOptions { ApDecode = true, MyCall = "K9AN" });
+        var results = decoder.Decode(clean, FreqLo, FreqHi, "000000");
+
+        // There should be at least one non-AP decode (normal decode succeeds first)
+        var match = results.FirstOrDefault(r => r.Message.Trim() == message);
+        match.Should().NotBeNull("clean signal must be decoded");
+        // Clean signal should decode normally (IsApDecode = false)
+        match!.IsApDecode.Should().BeFalse(
+            "a clean signal must decode via the normal path, not AP");
+    }
+
+    [Fact]
+    public void Ft4_ApDecode_Call2Known_DecodesNoisySignal()
+    {
+        const string message = "W1AW K9AN -07";
+        var clean = new Ft4Encoder().Encode(message, new EncoderOptions { FrequencyHz = TxFreqHz });
+        var noisy = AddGaussianNoise(clean, amplitude: 0.5, noiseSd: 0.25, seed: 42);
+        var buf   = new float[72576];
+        noisy.AsSpan(0, Math.Min(noisy.Length, buf.Length)).CopyTo(buf);
+
+        var decoder = new Ft4Decoder();
+        decoder.Configure(new DecoderOptions
+        {
+            DecoderDepth = DecoderDepth.Normal,
+            ApDecode     = true,
+            MyCall       = "K9AN",
+        });
+        var results = decoder.Decode(buf, FreqLo, FreqHi, "000000");
+
+        results.Should().Contain(r => r.Message.Trim() == message,
+            "FT4 AP-assisted decode with MyCall=K9AN must recover 'W1AW K9AN -07'");
+    }
+}

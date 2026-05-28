@@ -33,6 +33,13 @@ public sealed record DecodeResult
     /// <summary>True if decoded via a priori (AP) information.</summary>
     public bool IsApDecode { get; init; }
 
+    /// <summary>
+    /// Decode quality metric in [0, 1].  1 = perfect (no hard errors, dmin=0);
+    /// 0 = barely decodable.  NaN = not computed for this mode.
+    /// Formula: <c>clamp(1 − (hardErrors + dmin) / 60, 0, 1)</c> (WSJT-X 3.0 convention).
+    /// </summary>
+    public float Quality { get; init; } = float.NaN;
+
     public override string ToString() =>
         $"{UtcTime} {Snr,4:+0;-0;+0} {Dt,5:F1} {FrequencyHz,7:F0} {Message}";
 }

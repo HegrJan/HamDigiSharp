@@ -82,35 +82,78 @@ public sealed class Ft8Decoder : BaseDecoder
     {
         if (samples.Length < BlockSize * 4) return Array.Empty<DecodeResult>();
 
-        // ─ 1. Build sync waterfall (magnitude dB) ────────────────────────────
+        // ─ 1. Frequency range → waterfall bin limits ─────────────────────────
         int minBin = (int)(freqLow  * SymPeriod);
         int maxBin = (int)(freqHigh * SymPeriod) + 1;
         if (maxBin - minBin < 8) return Array.Empty<DecodeResult>();
 
         int numBins     = maxBin - minBin;
         int blockStride = TimeOsr * FreqOsr * numBins;
-        float[] wf = new float[MaxBlocks * blockStride];
 
-        // Copy to float[] once — needed for parallel BuildWaterfall and subtraction.
-        int cpLen       = Math.Min(samples.Length, Nfft1);
-        float[] workSamples = new float[samples.Length];
-        samples.CopyTo(workSamples);
+        // Keep original samples immutable across cycles.
+        int     cpLen           = Math.Min(samples.Length, Nfft1);
+        float[] originalSamples = new float[samples.Length];
+        samples.CopyTo(originalSamples);
 
-        BuildWaterfall(workSamples, wf, minBin, numBins, blockStride);
-
-        // ─ 2. Find sync candidates ────────────────────────────────────────────
-        var candidates = FindCandidates(wf, numBins, blockStride);
-        if (candidates.Count == 0) return Array.Empty<DecodeResult>();
-
-        // ─ 3. Pre-allocate the 192 000-pt FFT buffer once — reused across all three
-        //    signal-subtraction passes (the content is overwritten each pass).
-        var fullFft = new Complex[Nfft1];
-
-        // ─ 4. Three-pass decode with signal subtraction ───────────────────────
         var results = new List<DecodeResult>();
         var decoded  = new HashSet<string>();
 
-        var passCandidates = candidates; // first pass uses original candidates
+        // Pre-allocate the 192 000-pt FFT buffer once — reused across passes and cycles.
+        var fullFft = new Complex[Nfft1];
+
+        int cycles = Math.Max(1, Math.Min(3, Options.DecoderCycles));
+        for (int cycle = 0; cycle < cycles; cycle++)
+        {
+            float[] workSamples = ApplyCycleSmoothing(originalSamples, cycle);
+            DecodeBuffer(workSamples, minBin, numBins, blockStride, cpLen,
+                         utcTime, fullFft, results, decoded);
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Applies WSJT-X 3.0 multi-cycle time-domain smoothing to the sample buffer.
+    /// Cycle 0: original copy.  Cycle 1: forward average (i ← (orig[i]+orig[i+1])/2).
+    /// Cycle 2: backward average (i ← (orig[i-1]+orig[i])/2).
+    /// </summary>
+    private static float[] ApplyCycleSmoothing(float[] original, int cycle)
+    {
+        if (cycle == 0) return (float[])original.Clone();
+
+        var s = new float[original.Length];
+        if (cycle == 1)
+        {
+            for (int i = 0; i < original.Length - 1; i++)
+                s[i] = (original[i] + original[i + 1]) * 0.5f;
+            s[original.Length - 1] = original[original.Length - 1];
+        }
+        else // cycle == 2: backward average
+        {
+            s[0] = original[0];
+            for (int i = 1; i < original.Length; i++)
+                s[i] = (original[i - 1] + original[i]) * 0.5f;
+        }
+        return s;
+    }
+
+    /// <summary>
+    /// Runs the 3-pass signal-subtraction decode loop on a single (potentially smoothed)
+    /// sample buffer.  New decodes are added to <paramref name="results"/> and
+    /// <paramref name="decoded"/> (cross-cycle deduplication).
+    /// </summary>
+    private void DecodeBuffer(
+        float[] workSamples, int minBin, int numBins, int blockStride, int cpLen,
+        string utcTime, Complex[] fullFft,
+        List<DecodeResult> results, HashSet<string> decoded)
+    {
+        float[] wf = new float[MaxBlocks * blockStride];
+        BuildWaterfall(workSamples, wf, minBin, numBins, blockStride);
+
+        var candidates = FindCandidates(wf, numBins, blockStride, pass: 0);
+        if (candidates.Count == 0) return;
+
+        var passCandidates = candidates;
 
         for (int pass = 0; pass < 3; pass++)
         {
@@ -155,9 +198,8 @@ public sealed class Ft8Decoder : BaseDecoder
             // Rebuild waterfall from cleaned audio → find new (previously hidden) candidates.
             float[] wf2 = new float[MaxBlocks * blockStride];
             BuildWaterfall(workSamples, wf2, minBin, numBins, blockStride);
-            passCandidates = FindCandidates(wf2, numBins, blockStride);
+            passCandidates = FindCandidates(wf2, numBins, blockStride, pass + 1);
         }
-        return results;
     }
 
     // ─ Decoded-signal info needed for time-domain subtraction ────────────────
@@ -310,12 +352,21 @@ public sealed class Ft8Decoder : BaseDecoder
         public byte  TimeSub, FreqSub;
     }
 
-    private List<Candidate> FindCandidates(float[] wf, int numBins, int blockStride)
+    private List<Candidate> FindCandidates(float[] wf, int numBins, int blockStride, int pass = 0)
     {
         int maxCand = Options.MaxCandidates > 0 ? Options.MaxCandidates : 200;
-        float minSync = Options.MinSyncDb < 0 ? float.NegativeInfinity
-                      : Options.MinSyncDb > 0 ? Options.MinSyncDb
-                      : DefaultMinSyncDb;
+        float minSync;
+        if (Options.LowSyncThreshold)
+        {
+            // WSJT-X 3.0 lft8lowth: per-pass thresholds 1.225 / 1.3 / 1.1
+            minSync = pass switch { 0 => 1.225f, 1 => 1.3f, _ => 1.1f };
+        }
+        else
+        {
+            minSync = Options.MinSyncDb < 0 ? float.NegativeInfinity
+                    : Options.MinSyncDb > 0 ? Options.MinSyncDb
+                    : DefaultMinSyncDb;
+        }
 
         // Parallelize over toff (−10 .. MaxBlocks−NSymbols+9), collect per-thread lists,
         // merge, sort and trim.  SyncScore is a pure read-only function so no locking needed.
@@ -510,6 +561,7 @@ public sealed class Ft8Decoder : BaseDecoder
                         {
                             var cs0 = (ifreqPass == 0) ? cs : ExtractCs(cd0, ibest);
                             info = new DecodeInfo(cw.AsSpan(0, 174).ToArray(), f1, ibest, cs0);
+                            float qual = (float)Math.Clamp(1.0 - (hardErrors + dmin) / 60.0, 0.0, 1.0);
                             result = new DecodeResult
                             {
                                 UtcTime     = utcTime,
@@ -520,12 +572,65 @@ public sealed class Ft8Decoder : BaseDecoder
                                 Mode        = DigitalMode.FT8,
                                 HardErrors  = hardErrors,
                                 Dmin        = dmin,
+                                Quality     = qual,
                             };
                             return true;
                         }
                     }
                     Array.Clear(msg77, 0, 77);
                     Array.Clear(cw, 0, 174);
+                }
+
+                // ─ AP-assisted decode ─────────────────────────────────────────────
+                if (Options.ApDecode)
+                {
+                    foreach (var (apBits, apMask77) in CollectApHints())
+                    {
+                        // Bias bmetE at known-bit positions with a large value (±50) that
+                        // dominates the channel LLR (~3-15 after scaling) while still
+                        // allowing BP to update belief messages on unknown bits.
+                        var apLlr    = new double[174];
+                        var ldpcMask = new bool[174];
+                        bmetE.AsSpan(0, 174).CopyTo(apLlr);
+                        const double ApBias = 50.0;
+                        for (int j = 0; j < 77; j++)
+                        {
+                            if (apMask77[j])
+                            {
+                                apLlr[j]    = apBits[j] ? ApBias : -ApBias;
+                                ldpcMask[j] = true;
+                            }
+                        }
+
+                        bool ok = Ldpc174_91.TryDecode(apLlr, ldpcMask, Options.DecoderDepth,
+                                                        msg77, cw, out int hardErrors, out double dmin);
+                        if (ok && hardErrors <= 40)
+                        {
+                            string message = MessagePacker.Unpack77(msg77, out bool unpkOk);
+                            if (unpkOk && !string.IsNullOrWhiteSpace(message))
+                            {
+                                var cs0 = (ifreqPass == 0) ? cs : ExtractCs(cd0, ibest);
+                                info = new DecodeInfo(cw.AsSpan(0, 174).ToArray(), f1, ibest, cs0);
+                                float qual = (float)Math.Clamp(1.0 - (hardErrors + dmin) / 60.0, 0.0, 1.0);
+                                result = new DecodeResult
+                                {
+                                    UtcTime     = utcTime,
+                                    Snr         = ComputeSnrDb(cs),
+                                    Dt          = dt,
+                                    FrequencyHz = freq,
+                                    Message     = message.Trim(),
+                                    Mode        = DigitalMode.FT8,
+                                    HardErrors  = hardErrors,
+                                    Dmin        = dmin,
+                                    Quality     = qual,
+                                    IsApDecode  = true,
+                                };
+                                return true;
+                            }
+                        }
+                        Array.Clear(msg77, 0, 77);
+                        Array.Clear(cw, 0, 174);
+                    }
                 }
             }
             return false;
@@ -540,6 +645,46 @@ public sealed class Ft8Decoder : BaseDecoder
             ArrayPool<bool>.Shared.Return(msg77);
             ArrayPool<bool>.Shared.Return(cw);
             ArrayPool<Complex>.Shared.Return(cdShift);
+        }
+    }
+
+    /// <summary>
+    /// Collects AP hint pairs based on the current decoder options.
+    /// Types are ordered by ascending constraint (most general first → least) so that
+    /// weakly-constrained types don't mask strongly-constrained ones that yield different messages.
+    /// </summary>
+    private IEnumerable<(bool[] bits, bool[] mask)> CollectApHints()
+    {
+        bool haveMyCall  = !string.IsNullOrEmpty(Options.MyCall);
+        bool haveHisCall = !string.IsNullOrEmpty(Options.HisCall);
+
+        // Type 1: only i3=1 known (3 bits) — very weak, always try first
+        yield return MessagePack77.BuildApHint77(MessagePack77.ApType.I3Only, null, null);
+
+        if (haveMyCall)
+        {
+            // Type 2: call2 = MyCall (31 bits fixed)
+            yield return MessagePack77.BuildApHint77(
+                MessagePack77.ApType.Call2, null, Options.MyCall);
+
+            if (haveHisCall)
+            {
+                // Types 3-6: both callsigns known
+                yield return MessagePack77.BuildApHint77(
+                    MessagePack77.ApType.Call1Call2, Options.HisCall, Options.MyCall);
+                yield return MessagePack77.BuildApHint77(
+                    MessagePack77.ApType.Call1Call2Rrr, Options.HisCall, Options.MyCall);
+                yield return MessagePack77.BuildApHint77(
+                    MessagePack77.ApType.Call1Call2_73, Options.HisCall, Options.MyCall);
+                yield return MessagePack77.BuildApHint77(
+                    MessagePack77.ApType.Call1Call2Rr73, Options.HisCall, Options.MyCall);
+            }
+        }
+        else if (haveHisCall)
+        {
+            // Symmetric: someone is calling HisCall (e.g., HisCall is calling CQ)
+            yield return MessagePack77.BuildApHint77(
+                MessagePack77.ApType.Call2, null, Options.HisCall);
         }
     }
 

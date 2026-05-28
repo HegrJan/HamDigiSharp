@@ -33,8 +33,25 @@ public sealed class DecoderOptions
     /// <summary>Maximum number of sync candidates to evaluate. Default 140 (matches ft8_lib).</summary>
     public int MaxCandidates { get; set; } = 140;
 
-    /// <summary>Minimum sync score (dB) for a candidate to be considered. Default 4.0.</summary>
-    public float MinSyncDb { get; set; } = 4.0f;
+    /// <summary>Minimum sync score (dB) for a candidate to be considered.
+    /// Default 2.1 (matches WSJT-X default). Use 0 for the decoder-internal default.</summary>
+    public float MinSyncDb { get; set; } = 2.1f;
+
+    /// <summary>
+    /// Use reduced per-pass sync thresholds (WSJT-X 3.0 lft8lowth mode).
+    /// Pass 0: 1.225 dB, Pass 1: 1.3 dB, Pass 2: 1.1 dB.
+    /// When true, <see cref="MinSyncDb"/> is ignored.
+    /// </summary>
+    public bool LowSyncThreshold { get; set; } = false;
+
+    /// <summary>
+    /// Number of decode cycles (1–3).  Each cycle applies a different time-smoothing
+    /// to the samples before the 3-pass signal-subtraction loop.
+    /// Cycle 0: original.  Cycle 1: forward average (i←(i+i+1)/2).  Cycle 2: backward average.
+    /// Higher values improve sensitivity at the cost of 2–3× more CPU.
+    /// Default 1 (one cycle, original WSJT-X behaviour).
+    /// </summary>
+    public int DecoderCycles { get; set; } = 1;
 
     /// <summary>Enable a priori (AP) aided decoding.</summary>
     public bool ApDecode { get; set; } = true;

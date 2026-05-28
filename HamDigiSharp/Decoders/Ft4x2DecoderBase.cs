@@ -628,21 +628,24 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
     /// LDPC.  On the first successful decode populates <paramref name="result"/>
     /// and returns <c>true</c>.  Uses <see cref="BaseDecoder.Mode"/> for the
     /// result's Mode field, so both FT4 and FT2 get the correct label.
+    /// Falls back to AP-assisted decode (types 2-6) if all normal variants fail
+    /// and <see cref="DecoderOptions.ApDecode"/> is enabled.
     /// </summary>
     protected bool TryLdpcVariants(
         double[]? llrA, double[]? llrB, double f0, double dt, string utcTime,
         double[,] s4, ref DecodeResult? result)
     {
-        var    apMask = EmptyApMask();
-        bool[] msg77  = ArrayPool<bool>.Shared.Rent(77);
-        bool[] cw     = ArrayPool<bool>.Shared.Rent(174);
+        bool[] msg77 = ArrayPool<bool>.Shared.Rent(77);
+        bool[] cw    = ArrayPool<bool>.Shared.Rent(174);
         try
         {
+            // ── Normal decode (no AP) ───────────────────────────────────────────
+            var emptyMask = EmptyApMask();
             foreach (var llr in BuildLlrVariants(llrA, llrB))
             {
                 Array.Clear(msg77, 0, 77);
                 Array.Clear(cw, 0, 174);
-                bool ok = Ldpc174_91.TryDecode(llr, apMask, Options.DecoderDepth,
+                bool ok = Ldpc174_91.TryDecode(llr, emptyMask, Options.DecoderDepth,
                                                 msg77, cw, out int hardErrors, out double dmin);
                 if (!ok || hardErrors > 37) continue;
 
@@ -651,6 +654,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
                 string message = MessagePacker.Unpack77(msg77, out bool unpkOk);
                 if (!unpkOk || string.IsNullOrWhiteSpace(message)) continue;
 
+                float qual = (float)Math.Clamp(1.0 - (hardErrors + dmin) / 60.0, 0.0, 1.0);
                 result = new DecodeResult
                 {
                     UtcTime     = utcTime,
@@ -661,15 +665,106 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
                     Mode        = Mode,
                     HardErrors  = hardErrors,
                     Dmin        = dmin,
+                    Quality     = qual,
                 };
                 return true;
             }
+
+            // ── AP-assisted decode ──────────────────────────────────────────────
+            if (Options.ApDecode)
+            {
+                double[]? baseLlr = llrA ?? llrB;  // ensemble or best available
+                if (baseLlr is not null)
+                {
+                    foreach (var (apBits, apMask77) in CollectApHints())
+                    {
+                        var apLlr    = new double[174];
+                        var ldpcMask = new bool[174];
+                        baseLlr.AsSpan(0, 174).CopyTo(apLlr);
+                        const double ApBias = 50.0;
+                        // For FT4/FT2 the channel bit j = actual_bit[j] ^ Rvec[j].
+                        // So AP known bit b → channel bit b ^ Rvec[j].
+                        for (int j = 0; j < 77; j++)
+                        {
+                            if (apMask77[j])
+                            {
+                                bool channelBit = apBits[j] ^ Rvec[j];
+                                apLlr[j]    = channelBit ? ApBias : -ApBias;
+                                ldpcMask[j] = true;
+                            }
+                        }
+
+                        Array.Clear(msg77, 0, 77);
+                        Array.Clear(cw, 0, 174);
+                        bool ok = Ldpc174_91.TryDecode(apLlr, ldpcMask, Options.DecoderDepth,
+                                                        msg77, cw, out int hardErrors, out double dmin);
+                        if (!ok || hardErrors > 40) continue;
+
+                        for (int i = 0; i < 77; i++) msg77[i] ^= Rvec[i];
+
+                        string message = MessagePacker.Unpack77(msg77, out bool unpkOk);
+                        if (!unpkOk || string.IsNullOrWhiteSpace(message)) continue;
+
+                        float qual = (float)Math.Clamp(1.0 - (hardErrors + dmin) / 60.0, 0.0, 1.0);
+                        result = new DecodeResult
+                        {
+                            UtcTime     = utcTime,
+                            Snr         = ComputeSnrDb4Fsk(s4),
+                            Dt          = dt,
+                            FrequencyHz = f0,
+                            Message     = message.Trim(),
+                            Mode        = Mode,
+                            HardErrors  = hardErrors,
+                            Dmin        = dmin,
+                            Quality     = qual,
+                            IsApDecode  = true,
+                        };
+                        return true;
+                    }
+                }
+            }
+
             return false;
         }
         finally
         {
             ArrayPool<bool>.Shared.Return(msg77);
             ArrayPool<bool>.Shared.Return(cw);
+        }
+    }
+
+    /// <summary>
+    /// Collects AP hint pairs for FT4/FT2 based on current decoder options.
+    /// Note: the channel bits include Rvec XOR; callers must XOR before biasing LLR.
+    /// </summary>
+    private IEnumerable<(bool[] bits, bool[] mask)> CollectApHints()
+    {
+        bool haveMyCall  = !string.IsNullOrEmpty(Options.MyCall);
+        bool haveHisCall = !string.IsNullOrEmpty(Options.HisCall);
+
+        yield return MessagePack77.BuildApHint77(MessagePack77.ApType.I3Only, null, null);
+
+        if (haveMyCall)
+        {
+            yield return MessagePack77.BuildApHint77(
+                MessagePack77.ApType.Call2, null, Options.MyCall);
+
+            if (haveHisCall)
+            {
+                yield return MessagePack77.BuildApHint77(
+                    MessagePack77.ApType.Call1Call2, Options.HisCall, Options.MyCall);
+                yield return MessagePack77.BuildApHint77(
+                    MessagePack77.ApType.Call1Call2Rrr, Options.HisCall, Options.MyCall);
+                yield return MessagePack77.BuildApHint77(
+                    MessagePack77.ApType.Call1Call2_73, Options.HisCall, Options.MyCall);
+                yield return MessagePack77.BuildApHint77(
+                    MessagePack77.ApType.Call1Call2Rr73, Options.HisCall, Options.MyCall);
+            }
+        }
+        else if (haveHisCall)
+        {
+            yield return MessagePack77.BuildApHint77(
+                MessagePack77.ApType.Call2, null, Options.HisCall);
         }
     }
 

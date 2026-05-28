@@ -398,4 +398,97 @@ public static class MessagePack77
         ulong product = unchecked((ulong)(47055833459L * n8));
         return (int)(product >> (64 - m));
     }
+
+    // ── AP (a priori) assist helpers ─────────────────────────────────────────
+
+    /// <summary>
+    /// Specifies which fields are known a priori in a Type-1 (i3=1) structured message.
+    /// Used to build AP-biased LLR vectors for the LDPC decoder (WSJT-X 3.0 types 1–6).
+    /// </summary>
+    public enum ApType
+    {
+        /// <summary>No AP information.</summary>
+        None,
+        /// <summary>Type 1: only i3=1 is known (3 bits).</summary>
+        I3Only,
+        /// <summary>Type 2: call2 (n28b) is MyCall (31 bits).</summary>
+        Call2,
+        /// <summary>Type 3: call1 = HisCall, call2 = MyCall (60 bits).</summary>
+        Call1Call2,
+        /// <summary>Type 4: call1+call2 + igrid4=RRR (all 77 bits).</summary>
+        Call1Call2Rrr,
+        /// <summary>Type 5: call1+call2 + igrid4=73 (all 77 bits).</summary>
+        Call1Call2_73,
+        /// <summary>Type 6: call1+call2 + igrid4=RR73 (all 77 bits).</summary>
+        Call1Call2Rr73,
+    }
+
+    /// <summary>
+    /// Builds the 77-bit AP hint vectors for a Type-1 (i3=1) structured QSO message.
+    /// </summary>
+    /// <param name="type">Which fields to fix as known.</param>
+    /// <param name="call1">Callsign for position 1 (n28a), used by types ≥ Call1Call2.</param>
+    /// <param name="call2">Callsign for position 2 (n28b), used by types ≥ Call2.</param>
+    /// <returns>
+    /// <c>(bits, mask)</c> — <c>mask[j]</c> is <see langword="true"/> when bit <c>j</c>
+    /// is known, and <c>bits[j]</c> is the known value.
+    /// Bit layout (Type-1 i3=1): n28a[0-27], ipa[28], n28b[29-56], ipb[57], ir[58],
+    /// igrid4[59-73], i3[74-76].
+    /// </returns>
+    public static (bool[] bits, bool[] mask) BuildApHint77(
+        ApType type, string? call1, string? call2)
+    {
+        var bits = new bool[77];
+        var mask = new bool[77];
+        if (type == ApType.None) return (bits, mask);
+
+        // i3=1 → bits 74-76 = 001 (MSB-first: false, false, true)
+        bits[76] = true;
+        mask[74] = mask[75] = mask[76] = true;
+
+        if (type == ApType.I3Only) return (bits, mask);
+
+        // call2 = n28b → bits 29-56; ipb=0 → bit 57
+        int n28b = string.IsNullOrEmpty(call2) ? 0 : Pack28(call2);
+        SetBitsAp(n28b, 28, bits, mask, 29);
+        mask[57] = true; // ipb = 0 → bits[57] = false (already false by default)
+
+        if (type == ApType.Call2) return (bits, mask);
+
+        // call1 = n28a → bits 0-27; ipa=0 → bit 28
+        int n28a = string.IsNullOrEmpty(call1) ? 0 : Pack28(call1);
+        SetBitsAp(n28a, 28, bits, mask, 0);
+        mask[28] = true; // ipa = 0 → bits[28] = false (already false by default)
+
+        if (type == ApType.Call1Call2) return (bits, mask);
+
+        // ir=0 → bit 58; igrid4 → bits 59-73
+        mask[58] = true; // ir = 0 → bits[58] = false
+        int igrid4 = type switch
+        {
+            ApType.Call1Call2Rrr  => MaxGrid4 + 2,
+            ApType.Call1Call2Rr73 => MaxGrid4 + 3,
+            ApType.Call1Call2_73  => MaxGrid4 + 4,
+            _                     => -1,
+        };
+        if (igrid4 >= 0)
+            SetBitsAp(igrid4, 15, bits, mask, 59);
+
+        return (bits, mask);
+    }
+
+    /// <summary>
+    /// Writes <paramref name="nBits"/> of <paramref name="value"/> (MSB first) into
+    /// <paramref name="bits"/> and sets the corresponding positions in
+    /// <paramref name="mask"/> to <see langword="true"/>.
+    /// </summary>
+    private static void SetBitsAp(int value, int nBits, bool[] bits, bool[] mask, int startPos)
+    {
+        for (int i = nBits - 1; i >= 0; i--)
+        {
+            bits[startPos]  = ((value >> i) & 1) == 1;
+            mask[startPos]  = true;
+            startPos++;
+        }
+    }
 }
