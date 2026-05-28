@@ -8,7 +8,7 @@ namespace HamDigiSharp.Encoders;
 
 /// <summary>
 /// SuperFox Fox-transmitter encoder.
-/// Encodes a compound message into 180,000 float PCM samples at 12 kHz (15 s).
+/// Encodes a compound message into 156,672 float PCM samples at 12 kHz (≈13.056 s).
 ///
 /// Message formats:
 /// <list type="bullet">
@@ -31,8 +31,7 @@ public sealed class SuperFoxEncoder : IDigitalModeEncoder
     // ── Physical-layer constants ───────────────────────────────────────────────
     private const int    NSps       = 1024;          // samples/symbol at 12 kHz
     private const int    NSym       = 151;           // QPC frame symbols (24 sync + 127 data)
-    private const int    NWave      = NSym * NSps;   // 154,624 active samples
-    private const int    NTotal     = 15 * 12000;    // 180,000 samples padded to 15 s
+    private const int    NWave      = (NSym + 2) * NSps;   // 156,672 samples (FT4-style GFSK, matches MSHV gen_sfox.cpp)
     private const double GfskBt     = 8.0;           // GFSK bandwidth-time product
 
     // ── QPC code constants ─────────────────────────────────────────────────────
@@ -415,15 +414,15 @@ public sealed class SuperFoxEncoder : IDigitalModeEncoder
             dphi[NSym * NSps + i] += dphiPeak * itone[NSym - 1] * pulse[i];
         }
 
-        // Integrate dphi → sine wave. Output window starts at dphi[NSps] (skip pre-roll).
+        // Integrate dphi → sine wave. FT4-style: window starts at dphi[0] (matches MSHV gen_sfox.cpp).
         double ofs = 2.0 * Math.PI * freqHz / 12000.0;
         double phi = 0.0;
-        var samples = new float[NTotal]; // pre-zeroed; silence fills [NWave..NTotal-1]
+        var samples = new float[NWave];
 
         for (int k = 0; k < NWave; k++)
         {
             samples[k] = (float)(amplitude * Math.Sin(phi));
-            phi = (phi + dphi[k + NSps] + ofs) % (2.0 * Math.PI);
+            phi = (phi + dphi[k] + ofs) % (2.0 * Math.PI);
         }
 
         // Raised cosine amplitude ramp in/out (NSps/8 = 128 samples)

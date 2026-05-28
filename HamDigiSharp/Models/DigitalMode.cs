@@ -81,7 +81,9 @@ public static class DigitalModeExtensions
     public static double SignalDurationSeconds(this DigitalMode mode) => mode switch
     {
         // FT8:  79 symbols × 1920/12000 s = 12.64 s  (out of 15 s period)
-        DigitalMode.FT8 or DigitalMode.SuperFox => 79  * (1920.0 / 12000),
+        DigitalMode.FT8 => 79  * (1920.0 / 12000),
+        // SuperFox: (151+2) symbols × 1024/12000 s ≈ 13.056 s  (FT4-style GFSK, out of 15 s period)
+        DigitalMode.SuperFox => 153 * (1024.0 / 12000),
         // FT4:  105 symbols × 576/12000 s = 5.04 s   (out of  7.5 s period)
         DigitalMode.FT4  => 105 * (576.0  / 12000),
         // FT2:  105 symbols × 288/12000 s = 2.52 s   (out of  3.75 s period)

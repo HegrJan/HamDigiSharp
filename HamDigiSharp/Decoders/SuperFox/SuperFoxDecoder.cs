@@ -600,8 +600,9 @@ public sealed class SuperFoxDecoder : BaseDecoder
     internal (double[,] s3, double f2, double t2, double syncSnr)? TestDemodulate(
         float[] audio, double fsync = 750.0, double? forcedT2 = null, double? forcedF2 = null)
     {
-        var dd = new double[Math.Min(audio.Length, Nmax)];
-        for (int i = 0; i < dd.Length; i++) dd[i] = audio[i];
+        var dd = new double[Nmax]; // SfoxAna requires exactly Nmax elements; zero-pad if audio is shorter
+        int copyLen = Math.Min(audio.Length, Nmax);
+        for (int i = 0; i < copyLen; i++) dd[i] = audio[i];
         var c0 = SfoxAna(dd);
 
         if (!QpcSync(c0, fsync, fsync - 200, fsync + 200, out double f2, out double t2, out double syncSnr))

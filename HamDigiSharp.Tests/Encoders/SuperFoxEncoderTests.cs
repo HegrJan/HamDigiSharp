@@ -18,46 +18,45 @@ public class SuperFoxEncoderTests
     // ═══════════════════════════════════════════════════════════════════════════
 
     [Fact]
-    public void Encode_CqMessage_Returns180000Samples()
+    public void Encode_CqMessage_Returns156672Samples()
     {
         var enc = new SuperFoxEncoder();
         var audio = enc.Encode("CQ LZ2HVV KN23", new EncoderOptions { FrequencyHz = 750 });
-        audio.Length.Should().Be(180_000, "15 s × 12000 Hz = 180,000 samples");
+        audio.Length.Should().Be(156_672, "(151+2) symbols × 1024 samples/symbol = 156,672 samples ≈ 13.056 s");
     }
 
     [Fact]
-    public void Encode_StandardMessage_Returns180000Samples()
+    public void Encode_StandardMessage_Returns156672Samples()
     {
         var enc = new SuperFoxEncoder();
         var audio = enc.Encode("LZ2HVV W4ABC +01 G4XYZ", new EncoderOptions { FrequencyHz = 750 });
-        audio.Length.Should().Be(180_000);
+        audio.Length.Should().Be(156_672);
     }
 
     [Fact]
-    public void Encode_MultipleHounds_Returns180000Samples()
+    public void Encode_MultipleHounds_Returns156672Samples()
     {
         var enc = new SuperFoxEncoder();
         var audio = enc.Encode(
             "LZ2HVV K1AA +05 K2BB -07 K3CC K4DD K5EE",
             new EncoderOptions { FrequencyHz = 750 });
-        audio.Length.Should().Be(180_000);
+        audio.Length.Should().Be(156_672);
     }
 
-    // Active samples are non-zero; tail is padded silence
+    // All samples are part of the active signal; the last NSps/8 samples are the fade-out ramp.
     [Fact]
-    public void Encode_ActiveSamplesNonZero_TailIsSilence()
+    public void Encode_ActiveSamples_HaveNonZeroEnergy()
     {
         var enc = new SuperFoxEncoder();
         var audio = enc.Encode("CQ LZ2HVV KN23",
             new EncoderOptions { FrequencyHz = 750, Amplitude = 0.5 });
 
-        const int nActive = 151 * 1024; // 154,624
+        const int nActive = 153 * 1024; // 156,672 — the full FT4-style burst
+        audio.Length.Should().Be(nActive);
+
         double rms = Math.Sqrt(audio[100..(nActive - 100)]
             .Average(x => (double)x * x));
         rms.Should().BeGreaterThan(0.1, "active region must have non-zero energy");
-
-        for (int i = nActive + 100; i < 180_000; i++)
-            audio[i].Should().Be(0f, "tail beyond active signal must be zero");
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -235,12 +234,12 @@ public class SuperFoxEncoderTests
     }
 
     [Fact]
-    public void EncoderEngine_EncodesSuperFox_Returns180000Samples()
+    public void EncoderEngine_EncodesSuperFox_Returns156672Samples()
     {
         using var engine = new EncoderEngine();
         var audio = engine.Encode("CQ LZ2HVV KN23", DigitalMode.SuperFox,
             new EncoderOptions { FrequencyHz = 750 });
-        audio.Length.Should().Be(180_000);
+        audio.Length.Should().Be(156_672);
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
