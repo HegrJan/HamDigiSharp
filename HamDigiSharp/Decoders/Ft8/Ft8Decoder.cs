@@ -470,8 +470,8 @@ public sealed class Ft8Decoder : BaseDecoder
         // ─ Per-candidate baseband downsampling (WSJT-X ft8_downsample.f90) ───
         double f1 = (minBin + cand.FreqOffset + (double)cand.FreqSub / FreqOsr) * Baud;
 
-        // Allocate exactly Nfft2 — CANNOT pool because Fft.InverseInPlace operates on
-        // the entire array length; pool buckets return power-of-2 sizes (4096 ≠ 3200).
+        // Allocate exactly Nfft2. Could now be pooled (pool buckets return power-of-2
+        // sizes, 4096 ≠ 3200) since Fft.InverseInPlace accepts cd0.AsSpan(0, Nfft2).
         var cd0 = new Complex[Nfft2];
         Ft8Downsample(fullFft, f1, cd0);
 
@@ -494,8 +494,7 @@ public sealed class Ft8Decoder : BaseDecoder
         double[] bmetE = ArrayPool<double>.Shared.Rent(174);
         bool[]   msg77 = ArrayPool<bool>.Shared.Rent(77);
         bool[]   cw    = ArrayPool<bool>.Shared.Rent(174);
-        // cdShift: the half-bin shifted baseband — pooling is safe because it is
-        // never passed to Fft.InverseInPlace (filled by a manual rotation loop).
+        // cdShift: the half-bin shifted baseband, filled by a manual rotation loop.
         Complex[] cdShift = ArrayPool<Complex>.Shared.Rent(Nfft2);
         // Rent(32) returns exactly 32 elements, as required by the ForwardInPlace fast path.
         Complex[] cbuf32  = ArrayPool<Complex>.Shared.Rent(NBase);

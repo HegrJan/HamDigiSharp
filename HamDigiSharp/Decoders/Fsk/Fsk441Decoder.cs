@@ -201,8 +201,7 @@ public abstract class FskBaseDecoder : BaseDecoder
         {
             for (int i = 0; i < FftLen; i++)
                 buf[i] = new System.Numerics.Complex(dd[s + i], 0);
-            MathNet.Numerics.IntegralTransforms.Fourier.Forward(buf,
-                MathNet.Numerics.IntegralTransforms.FourierOptions.AsymmetricScaling);
+            Fft.ForwardInPlace(buf);
             for (int i = 0; i < FftLen / 2; i++)
                 spec[i] += buf[i].MagnitudeSquared;
         }
@@ -216,8 +215,7 @@ public abstract class FskBaseDecoder : BaseDecoder
             for (int i = 0; i < Math.Min(n, FftLen); i++)
                 buf[i] = new System.Numerics.Complex(dd[start + i], 0);
             for (int i = n; i < FftLen; i++) buf[i] = default;
-            MathNet.Numerics.IntegralTransforms.Fourier.Forward(buf,
-                MathNet.Numerics.IntegralTransforms.FourierOptions.AsymmetricScaling);
+            Fft.ForwardInPlace(buf);
             for (int i = 0; i < FftLen / 2; i++)
                 spec[i] = buf[i].MagnitudeSquared;
         }

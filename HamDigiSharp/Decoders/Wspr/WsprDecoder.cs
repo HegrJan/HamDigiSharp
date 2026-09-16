@@ -3,7 +3,6 @@ using System.Numerics;
 using HamDigiSharp.Dsp;
 using HamDigiSharp.Codecs;
 using HamDigiSharp.Models;
-using MathNet.Numerics.IntegralTransforms;
 
 namespace HamDigiSharp.Decoders.Wspr;
 
@@ -400,7 +399,7 @@ public sealed class WsprDecoder : BaseDecoder
                 double im = k < qdat.Length ? qdat[k] * w : 0.0;
                 buf[j] = new Complex(re, im);
             }
-            Fourier.Forward(buf, FourierOptions.AsymmetricScaling);
+            Fft.ForwardInPlace(buf);
 
             // fftshift: map ps[j] ← |buf[(j+256)%512]|²
             for (int j = 0; j < NfftW; j++)
