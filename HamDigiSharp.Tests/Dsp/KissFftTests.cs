@@ -9,7 +9,7 @@ namespace HamDigiSharp.Tests.Dsp;
 
 /// <summary>
 /// Tests for the KISS FFT port behind <see cref="Fft"/>.
-/// MathNet.Numerics (still referenced for Erf) serves as the independent reference.
+/// MathNet.Numerics (a test-only reference) serves as the independent reference.
 ///
 /// The butterflies have Vector512/256/128 kernels plus a scalar fallback that are
 /// meant to be bit-identical. To exercise the narrower paths, re-run this class with

@@ -1,7 +1,7 @@
 using HamDigiSharp.Abstractions;
 using HamDigiSharp.Codecs;
+using HamDigiSharp.Dsp;
 using HamDigiSharp.Models;
-using MathNet.Numerics;
 
 namespace HamDigiSharp.Encoders;
 
@@ -140,6 +140,6 @@ public sealed class Ft2Encoder : IDigitalModeEncoder
     private static double GfskPulse(double b, double t)
     {
         double c = Math.PI * Math.Sqrt(2.0 / Math.Log(2.0));
-        return 0.5 * (SpecialFunctions.Erf(c * b * (t + 0.5)) - SpecialFunctions.Erf(c * b * (t - 0.5)));
+        return 0.5 * (SpecialMath.Erf(c * b * (t + 0.5)) - SpecialMath.Erf(c * b * (t - 0.5)));
     }
 }

@@ -14,7 +14,7 @@ and verified by round-trip testing.
 ## Goals
 
 - **Encode + Decode** — full TX and RX sides for all 20 modes; Q65 supports up to 5-period incoherent averaging and FT4/FT2 support coherent multi-period LLR averaging for weak-signal work
-- **Pure managed** — no FFTW3 or other native dependencies; FFT is a built-in SIMD-accelerated C# port of [KISS FFT](https://github.com/mborgerding/kissfft) (BSD-3-Clause, © Mark Borgerding); [MathNet.Numerics](https://numerics.mathdotnet.com/) is used only for `Erf`
+- **Pure managed** — no FFTW3, MathNet or other third-party math dependencies; FFT is a built-in SIMD-accelerated C# port of [KISS FFT](https://github.com/mborgerding/kissfft) (BSD-3-Clause, © Mark Borgerding) and `erf` is ported from [fdlibm](https://www.netlib.org/fdlibm/) (© Sun Microsystems)
 - **All 19 MSHV modes + SuperFox** — full encoder and decoder for every mode (see table below)
 - **Extensible** — add new modes by implementing `IDigitalModeDecoder` / `IDigitalModeEncoder`
 - **Reusable** — designed for embedding in any .NET GUI application

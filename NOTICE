@@ -27,6 +27,22 @@ MSHV (http://lz2hv.org/mshv)
   MSHV is distributed under the GNU General Public License v3 or later.
 
 ----------------------------------------------------------------------------
+KISS FFT (https://github.com/mborgerding/kissfft)
+
+  HamDigiSharp/Dsp/KissFft.cs is a C# port of KISS FFT.
+  Copyright (c) 2003-2010, Mark Borgerding. All rights reserved.
+  Distributed under the BSD 3-Clause License (full text in the source file).
+
+----------------------------------------------------------------------------
+fdlibm (http://www.netlib.org/fdlibm/)
+
+  HamDigiSharp/Dsp/SpecialMath.cs contains a C# port of erf from fdlibm s_erf.c.
+  Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+  Developed at SunPro, a Sun Microsystems, Inc. business.
+  Permission to use, copy, modify, and distribute this software is freely
+  granted, provided that this notice is preserved.
+
+----------------------------------------------------------------------------
 
 HamDigiEngine itself is licensed under the GNU General Public License v3
 or later (see LICENSE).  Copyright (C) 2024-2025 Jan Hegr (OK1TE) <ok1te@email.cz>.

@@ -1,8 +1,8 @@
 using HamDigiSharp.Abstractions;
 using HamDigiSharp.Codecs;
 using HamDigiSharp.Decoders.SuperFox;
+using HamDigiSharp.Dsp;
 using HamDigiSharp.Models;
-using MathNet.Numerics;
 
 namespace HamDigiSharp.Encoders;
 
@@ -444,8 +444,8 @@ public sealed class SuperFoxEncoder : IDigitalModeEncoder
         {
             double t  = ((double)i - 1.5 * NSps) / NSps;
             double c  = Math.PI * Math.Sqrt(2.0 / Math.Log(2.0));
-            pulse[i]  = 0.5 * (SpecialFunctions.Erf(c * GfskBt * (t + 0.5))
-                                - SpecialFunctions.Erf(c * GfskBt * (t - 0.5)));
+            pulse[i]  = 0.5 * (SpecialMath.Erf(c * GfskBt * (t + 0.5))
+                                - SpecialMath.Erf(c * GfskBt * (t - 0.5)));
         }
         return pulse;
     }
