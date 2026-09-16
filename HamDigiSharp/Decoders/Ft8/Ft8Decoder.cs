@@ -470,23 +470,9 @@ public sealed class Ft8Decoder : BaseDecoder
         // ─ Per-candidate baseband downsampling (WSJT-X ft8_downsample.f90) ───
         double f1 = (minBin + cand.FreqOffset + (double)cand.FreqSub / FreqOsr) * Baud;
 
-        // Allocate exactly Nfft2. Could now be pooled (pool buckets return power-of-2
-        // sizes, 4096 ≠ 3200) since Fft.InverseInPlace accepts cd0.AsSpan(0, Nfft2).
-        var cd0 = new Complex[Nfft2];
-        Ft8Downsample(fullFft, f1, cd0);
-
-        // Coarse timing from sync waterfall, then refine using Costas pilot power.
-        int ibest0 = (cand.TimeOffset * TimeOsr + cand.TimeSub) * (Subblock / NDown);
-        int ibest  = OptimizeIbest(cd0, ibest0);
-
-        // Reject implausible timing. ibest/200 converts 200 Hz sample index to seconds.
-        double dt = ibest / 200.0;
-        if (dt < -2.5 || dt > 3.5) return false;
-
-        double freq   = f1;
-        var    apMask = EmptyApMask();
-
-        // Pool the hot per-iteration arrays (rented once, reused across ifreqPass and LLR loops).
+        // Pool the hot per-candidate arrays (rented once, reused across ifreqPass and LLR loops).
+        // Pool buckets are power-of-2 sized, so the baseband is always used as an Nfft2 slice.
+        Complex[] cd0Buf = ArrayPool<Complex>.Shared.Rent(Nfft2);
         double[] bmeta = ArrayPool<double>.Shared.Rent(174);
         double[] bmetb = ArrayPool<double>.Shared.Rent(174);
         double[] bmetc = ArrayPool<double>.Shared.Rent(174);
@@ -496,18 +482,32 @@ public sealed class Ft8Decoder : BaseDecoder
         bool[]   cw    = ArrayPool<bool>.Shared.Rent(174);
         // cdShift: the half-bin shifted baseband, filled by a manual rotation loop.
         Complex[] cdShift = ArrayPool<Complex>.Shared.Rent(Nfft2);
-        // Rent(32) returns exactly 32 elements, as required by the ForwardInPlace fast path.
+        // Rent(32) returns exactly 32 elements; ForwardInPlace(Complex[]) transforms the whole array.
         Complex[] cbuf32  = ArrayPool<Complex>.Shared.Rent(NBase);
 
         try
         {
+            Span<Complex> cd0 = cd0Buf.AsSpan(0, Nfft2);
+            Ft8Downsample(fullFft, f1, cd0);
+
+            // Coarse timing from sync waterfall, then refine using Costas pilot power.
+            int ibest0 = (cand.TimeOffset * TimeOsr + cand.TimeSub) * (Subblock / NDown);
+            int ibest  = OptimizeIbest(cd0, ibest0);
+
+            // Reject implausible timing. ibest/200 converts 200 Hz sample index to seconds.
+            double dt = ibest / 200.0;
+            if (dt < -2.5 || dt > 3.5) return false;
+
+            double freq   = f1;
+            var    apMask = EmptyApMask();
+
             Array.Clear(msg77, 0, 77);
             Array.Clear(cw, 0, 174);
 
             // ─ Try frequency sub-passes: nominal f1 and +half-bin offset ─────────
             for (int ifreqPass = 0; ifreqPass < 2; ifreqPass++)
             {
-                Complex[] cd = cd0;
+                ReadOnlySpan<Complex> cd = cd0;
                 if (ifreqPass == 1)
                 {
                     // Apply +half-bin shift (= +3.125 Hz = half of 6.25 Hz tone spacing).
@@ -525,7 +525,7 @@ public sealed class Ft8Decoder : BaseDecoder
                         ci = cr * dSin + ci * dCos;
                         cr = ncr;
                     }
-                    cd = cdShift;
+                    cd = cdShift.AsSpan(0, Nfft2);
                 }
 
                 // ─ Extract per-symbol spectra ─────────────────────────────────────
@@ -655,6 +655,7 @@ public sealed class Ft8Decoder : BaseDecoder
             ArrayPool<double>.Shared.Return(bmetE);
             ArrayPool<bool>.Shared.Return(msg77);
             ArrayPool<bool>.Shared.Return(cw);
+            ArrayPool<Complex>.Shared.Return(cd0Buf);
             ArrayPool<Complex>.Shared.Return(cdShift);
             ArrayPool<Complex>.Shared.Return(cbuf32);
         }
@@ -790,22 +791,28 @@ public sealed class Ft8Decoder : BaseDecoder
     }
 
     // Extracts cs[79,8] from cd0 at the given ibest — used when the freq-shift pass succeeds.
-    private static Complex[] ExtractCs(Complex[] cd0, int ibest)
+    private static Complex[] ExtractCs(ReadOnlySpan<Complex> cd0, int ibest)
     {
         var       cs     = new Complex[NSymbols * NTones];
         Complex[] cbuf32 = ArrayPool<Complex>.Shared.Rent(NBase);
-        for (int sym = 0; sym < NSymbols; sym++)
+        try
         {
-            int start = ibest + sym * NBase;
-            for (int i = 0; i < NBase; i++)
+            for (int sym = 0; sym < NSymbols; sym++)
             {
-                int idx = start + i;
-                cbuf32[i] = (uint)idx < (uint)cd0.Length ? cd0[idx] : Complex.Zero;
+                int start = ibest + sym * NBase;
+                for (int i = 0; i < NBase; i++)
+                {
+                    int idx = start + i;
+                    cbuf32[i] = (uint)idx < (uint)cd0.Length ? cd0[idx] : Complex.Zero;
+                }
+                Fft.ForwardInPlace(cbuf32);
+                cbuf32.AsSpan(0, NTones).CopyTo(cs.AsSpan(sym * NTones));
             }
-            Fft.ForwardInPlace(cbuf32);
-            cbuf32.AsSpan(0, NTones).CopyTo(cs.AsSpan(sym * NTones));
         }
-        ArrayPool<Complex>.Shared.Return(cbuf32);
+        finally
+        {
+            ArrayPool<Complex>.Shared.Return(cbuf32);
+        }
         return cs;
     }
 
@@ -818,14 +825,14 @@ public sealed class Ft8Decoder : BaseDecoder
     private const int TimingCoarseStep   = 16;   // step for coarse pass (= 1 symbol / 2)
     private const int TimingFineRange    = 8;    // ± range for fine pass around best coarse
 
-    private static int OptimizeIbest(Complex[] cd0, int ibest0)
+    private static int OptimizeIbest(ReadOnlySpan<Complex> cd0, int ibest0)
     {
         // Two-stage timing search using all three Costas pilot groups.
         // Coarse: large range with coarse step to recover systematic waterfall timing bias.
         // Fine: exhaustive search ±TimingFineRange around the coarse peak.
         double bestCoarse = double.MinValue;
         int bestIbest = ibest0;
-        var cbuf = new Complex[NBase];
+        Span<Complex> cbuf = stackalloc Complex[NBase];
 
         for (int di = -TimingSearchCoarse; di <= TimingSearchCoarse; di += TimingCoarseStep)
         {
@@ -845,7 +852,7 @@ public sealed class Ft8Decoder : BaseDecoder
         return fineIbest;
     }
 
-    private static double CostasScore(Complex[] cd0, Complex[] cbuf, int ibest, int maxGroups = 3)
+    private static double CostasScore(ReadOnlySpan<Complex> cd0, Span<Complex> cbuf, int ibest, int maxGroups = 3)
     {
         double score = 0;
         for (int m = 0; m < maxGroups; m++)
@@ -881,7 +888,7 @@ public sealed class Ft8Decoder : BaseDecoder
     /// (length ≥ Nfft2) with the 200 Hz complex baseband buffer, exactly matching
     /// WSJT-X ft8_downsample.f90.  Caller owns <paramref name="c1"/> (may be pooled).
     /// </summary>
-    private static void Ft8Downsample(Complex[] fullFft, double f1, Complex[] c1)
+    private static void Ft8Downsample(Complex[] fullFft, double f1, Span<Complex> c1)
     {
         const double df = (double)SampleRate / Nfft1; // 0.0625 Hz per bin
 
@@ -889,8 +896,8 @@ public sealed class Ft8Decoder : BaseDecoder
         int ib = Math.Max(1, (int)Math.Round((f1 - 1.5 * Baud) / df));
         int it = Math.Min(Nfft1 / 2, (int)Math.Round((f1 + 8.5 * Baud) / df));
 
-        // Zero the working region — c1 may be a freshly allocated or a pooled array.
-        Array.Clear(c1, 0, Nfft2);
+        // Zero the working region — c1 is an Nfft2 slice of a pooled array.
+        c1.Clear();
 
         // Copy bins ib..it into c1[0..k-1]
         int k = 0;
@@ -921,14 +928,12 @@ public sealed class Ft8Decoder : BaseDecoder
         int shift = i0 - ib;
         if (shift > 0 && shift < Nfft2)
         {
-            var span = c1.AsSpan(0, Nfft2);
-            span[..shift].Reverse();
-            span[shift..].Reverse();
-            span.Reverse();
+            c1[..shift].Reverse();
+            c1[shift..].Reverse();
+            c1.Reverse();
         }
 
-        // IFFT → complex baseband at 200 Hz (AsymmetricScaling applies 1/Nfft2)
-        // NOTE: c1 must be exactly Nfft2 elements — caller must NOT pass a larger array.
+        // IFFT → complex baseband at 200 Hz (inverse applies 1/Nfft2)
         Fft.InverseInPlace(c1);
         // Scale (factor doesn't matter for NormalizeBmet, but keeps values comparable)
         double fac = Nfft2 / Math.Sqrt((double)Nfft1 * Nfft2); // = sqrt(Nfft2/Nfft1)
