@@ -1061,17 +1061,19 @@ public sealed class Ft8Decoder : BaseDecoder
     }
 
     /// <summary>
-    /// Normalises <paramref name="bmet"/> by its RMS (root-mean-square), matching
-    /// WSJT-X's <c>normalizebmet</c> exactly. After normalisation σ ≈ 1 for zero-mean
+    /// Normalises the 174 LLRs in <paramref name="bmet"/> by their RMS (root-mean-square),
+    /// matching WSJT-X's <c>normalizebmet</c> exactly. After normalisation σ ≈ 1 for zero-mean
     /// arrays; caller then scales by 3.2 to match the LDPC LLR calibration.
-    /// Uses hardware-accelerated SIMD when available.
+    /// Only the first 174 elements are used: <paramref name="bmet"/> is an ArrayPool rental
+    /// (length 256) whose tail holds stale data from previous renters.
     /// </summary>
     private static void NormalizeBmet(double[] bmet)
     {
-        double sum2  = TensorPrimitives.SumOfSquares<double>(bmet);
-        double sigma = sum2 > 0 ? Math.Sqrt(sum2 / bmet.Length) : 1e-5;
+        Span<double> llr = bmet.AsSpan(0, 174);
+        double sum2  = TensorPrimitives.SumOfSquares<double>(llr);
+        double sigma = sum2 > 0 ? Math.Sqrt(sum2 / llr.Length) : 1e-5;
         if (sigma < 1e-5) sigma = 1e-5;
-        TensorPrimitives.Multiply(bmet, 1.0 / sigma, bmet);
+        TensorPrimitives.Multiply(llr, 1.0 / sigma, llr);
     }
 
     // Min-heap helpers (by Score, ascending — so heap[0] is the WORST/lowest score)
