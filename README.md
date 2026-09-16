@@ -1,6 +1,6 @@
 # HamDigiSharp
 
-A pure managed .NET 8 class library for **ham radio digital mode operation** — both decoding
+A pure managed .NET 10 class library for **ham radio digital mode operation** — both decoding
 and transmitting. An independent C# implementation of the protocols used by
 [MSHV](https://lz2hv.org/mshv) (C++/Qt, by Hrisimir Hristov LZ2HV) and
 [WSJT-X](https://wsjt.sourceforge.io/), written from scratch against their reference sources
@@ -82,7 +82,7 @@ dotnet build
 dotnet test HamDigiSharp.Tests
 ```
 
-Requires **.NET 8+ SDK**.
+Requires **.NET 10 SDK**.
 
 ---
 
