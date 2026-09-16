@@ -75,6 +75,18 @@ public static class Ldpc174_91
         {25,38,65,99,122,160,0},{17,42,75,129,170,172,0}
     };
 
+    // 0-based flattened copies of Mn/Nm for the hot BP loops: X[row * cols + col].
+    private static readonly int[] MnIdx = FlattenZeroBased(Mn);
+    private static readonly int[] NmIdx = FlattenZeroBased(Nm);
+
+    private static int[] FlattenZeroBased(int[,] table)
+    {
+        var flat = new int[table.Length];
+        int k = 0;
+        foreach (int v in table) flat[k++] = v - 1;   // row-major; unused 0 entries become -1
+        return flat;
+    }
+
     private static readonly int[] Nrw =
     {
         7,6,6,6,7,6,7,6,6,7,6,6,7,7,6,6,6,7,6,7,6,7,6,6,6,7,6,6,6,7,6,6,6,6,7,
@@ -236,7 +248,7 @@ public static class Ldpc174_91
         {
             int parity = 0;
             for (int x = 0; x < Nrw[i]; x++)
-                parity ^= codeword174[Nm[i, x] - 1] ? 1 : 0;
+                parity ^= codeword174[NmIdx[i * 7 + x]] ? 1 : 0;
             if (parity != 0) return false;
         }
         return true;
@@ -286,7 +298,7 @@ public static class Ldpc174_91
 
         for (int j = 0; j < M; j++)
             for (int i = 0; i < Nrw[j]; i++)
-                toc[j * 7 + i] = llr[Nm[j, i] - 1];
+                toc[j * 7 + i] = llr[NmIdx[j * 7 + i]];
 
         int ncnt = 0, nclast = 0;
         try
@@ -306,7 +318,7 @@ public static class Ldpc174_91
                 for (int i = 0; i < M; i++)
                 {
                     int sum = 0;
-                    for (int x = 0; x < Nrw[i]; x++) sum += cw[Nm[i, x] - 1] ? 1 : 0;
+                    for (int x = 0; x < Nrw[i]; x++) sum += cw[NmIdx[i * 7 + x]] ? 1 : 0;
                     if (sum % 2 != 0) ncheck++;
                 }
 
@@ -337,10 +349,10 @@ public static class Ldpc174_91
                     int jBase = j * 7;
                     for (int i = 0; i < Nrw[j]; i++)
                     {
-                        int ibj = Nm[j, i] - 1;
+                        int ibj = NmIdx[j * 7 + i];
                         double t = zn[ibj];
                         for (int kk = 0; kk < 3; kk++)
-                            if (Mn[ibj, kk] - 1 == j)
+                            if (MnIdx[ibj * 3 + kk] == j)
                                 t -= tov[ibj * 3 + kk];
                         toc[jBase + i] = t;
                     }
@@ -358,11 +370,11 @@ public static class Ldpc174_91
                     int jBase3 = j * 3;
                     for (int i = 0; i < 3; i++)
                     {
-                        int ichk     = Mn[j, i] - 1;
+                        int ichk     = MnIdx[j * 3 + i];
                         int ichkBase = ichk * 7;
                         double tmn   = 1.0;
                         for (int z = 0; z < Nrw[ichk]; z++)
-                            if (Nm[ichk, z] - 1 != j) tmn *= tanhtoc[ichkBase + z];
+                            if (NmIdx[ichk * 7 + z] != j) tmn *= tanhtoc[ichkBase + z];
                         tov[jBase3 + i] = 2.0 * Platanh(-tmn);
                     }
                 }

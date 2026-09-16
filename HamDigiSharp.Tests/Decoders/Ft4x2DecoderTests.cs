@@ -28,9 +28,9 @@ public class Ft4x2DecoderTests
 
         // Expose protected / internal helpers for testing
         public double[] PrepareBufferPub(ReadOnlySpan<float> s)         => PrepareBuffer(s);
-        public int      CostasMatchesPub(double[,] s4)                  => CountCostasMatches(s4);
-        public double   SnrPub(double[,] s4)                            => ComputeSnrDb4Fsk(s4);
-        public double[]? LlrPub(Complex[] cd, double[,] s4, int minC)  => ComputeLlr(cd, s4, minC);
+        public int      CostasMatchesPub(double[] s4)                   => CountCostasMatches(s4);
+        public double   SnrPub(double[] s4)                             => ComputeSnrDb4Fsk(s4);
+        public double[]? LlrPub(Complex[] cd, double[] s4, int minC)   => ComputeLlr(cd, s4, minC);
         public static Complex[] ShiftPub(Complex[] cd, int nss)         => ShiftByHalfTone(cd, nss);
 
         // Expose internal CostasScore4Fsk for timing-optimizer tests
@@ -47,23 +47,23 @@ public class Ft4x2DecoderTests
     /// the expected tone set to <paramref name="sigAmp"/> and all others to
     /// <paramref name="noiseAmp"/>.  Data symbols are set to noiseAmp uniformly.
     /// </summary>
-    private static double[,] MakePilotS4(double sigAmp, double noiseAmp)
+    private static double[] MakePilotS4(double sigAmp, double noiseAmp)
     {
-        var s4 = new double[103, 4];
+        var s4 = new double[103 * 4];
         int[][] allCostas = { new[]{0,1,3,2}, new[]{1,0,2,3}, new[]{2,3,1,0}, new[]{3,2,0,1} };
         int[]   offsets   = { 0, 33, 66, 99 };
 
         // Fill everything with noise
         for (int k = 0; k < 103; k++)
-            for (int t = 0; t < 4; t++) s4[k, t] = noiseAmp;
+            for (int t = 0; t < 4; t++) s4[k * 4 + t] = noiseAmp;
 
         // Override Costas pilots
         for (int g = 0; g < 4; g++)
             for (int k = 0; k < 4; k++)
             {
                 int sym = offsets[g] + k;
-                for (int t = 0; t < 4; t++) s4[sym, t] = noiseAmp;
-                s4[sym, allCostas[g][k]] = sigAmp;
+                for (int t = 0; t < 4; t++) s4[sym * 4 + t] = noiseAmp;
+                s4[sym * 4 + allCostas[g][k]] = sigAmp;
             }
 
         return s4;
@@ -82,7 +82,7 @@ public class Ft4x2DecoderTests
     public void CountCostasMatches_AllWrongTones_Returns0()
     {
         // Put peak at tone 0 for every pilot (most expected tones are non-zero)
-        var s4 = new double[103, 4];
+        var s4 = new double[103 * 4];
         int[][] allCostas = { new[]{0,1,3,2}, new[]{1,0,2,3}, new[]{2,3,1,0}, new[]{3,2,0,1} };
         int[]   offsets   = { 0, 33, 66, 99 };
 
@@ -92,7 +92,7 @@ public class Ft4x2DecoderTests
                 int sym     = offsets[g] + k;
                 int expTone = allCostas[g][k];
                 int wrong   = (expTone + 1) % 4;   // guaranteed different tone
-                s4[sym, wrong] = 1.0;
+                s4[sym * 4 + wrong] = 1.0;
             }
 
         T.CostasMatchesPub(s4).Should().Be(0,
@@ -114,8 +114,8 @@ public class Ft4x2DecoderTests
             {
                 int sym     = offsets[g] + k;
                 int expTone = allCostas[g][k];
-                for (int t = 0; t < 4; t++) s4[sym, t] = 0;
-                s4[sym, (expTone + 1) % 4] = 1.0;
+                for (int t = 0; t < 4; t++) s4[sym * 4 + t] = 0;
+                s4[sym * 4 + (expTone + 1) % 4] = 1.0;
             }
 
         T.CostasMatchesPub(s4).Should().Be(8);
@@ -147,7 +147,7 @@ public class Ft4x2DecoderTests
     [Fact]
     public void ComputeSnrDb4Fsk_PureSilence_ReturnsMinusThirty()
     {
-        var s4 = new double[103, 4]; // all zeros
+        var s4 = new double[103 * 4]; // all zeros
         T.SnrPub(s4).Should().Be(-30);
     }
 
@@ -235,7 +235,7 @@ public class Ft4x2DecoderTests
         // All zeros → CountCostasMatches returns ≤4 (tie-breaks to tone 0).
         // Using minC=5 guarantees the sync gate rejects.
         var cd = new Complex[103 * 32];
-        var s4 = new double[103, 4];
+        var s4 = new double[103 * 4];
         T.LlrPub(cd, s4, minC: 5).Should().BeNull(
             "all-zero input cannot satisfy a min-matches gate of 5");
     }
@@ -254,7 +254,7 @@ public class Ft4x2DecoderTests
                 cd[sym * nss + i] = new Complex(1.0, 0.0);
         }
 
-        var s4  = new double[103, 4];
+        var s4  = new double[103 * 4];
         var llr = T.LlrPub(cd, s4, minC: 1);   // low threshold: accept whatever matches
         llr.Should().NotBeNull("dominant-tone signal should produce valid LLRs");
         llr!.Should().HaveCount(174);

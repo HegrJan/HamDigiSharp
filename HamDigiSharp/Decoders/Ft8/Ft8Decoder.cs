@@ -29,6 +29,7 @@ public sealed class Ft8Decoder : BaseDecoder
     private const int Nfft        = BlockSize * FreqOsr; // 3840 — sync waterfall FFT length
     private const int Subblock    = BlockSize / TimeOsr; // 960 — step per FFT row
     private const int NSymbols    = 79;
+    private const int NTones      = 8;
     private const int NDat        = 58;     // data symbols
     private const double SymPeriod = 0.160; // seconds per symbol
     private const double Baud      = 1.0 / SymPeriod; // 6.25 Hz tone spacing
@@ -207,7 +208,7 @@ public sealed class Ft8Decoder : BaseDecoder
     }
 
     // ─ Decoded-signal info needed for time-domain subtraction ────────────────
-    private readonly record struct DecodeInfo(bool[] Cw, double F1, int Ibest, Complex[,] Cs);
+    private readonly record struct DecodeInfo(bool[] Cw, double F1, int Ibest, Complex[] Cs);
 
     /// <summary>
     /// Converts the 174-bit FT8 codeword to the 79-symbol frame
@@ -262,7 +263,7 @@ public sealed class Ft8Decoder : BaseDecoder
             // Recover complex amplitude from the baseband spectrogram.
             double pcAngle = -Tau * tone * n0 / NBase;
             double pcRe = Math.Cos(pcAngle), pcIm = Math.Sin(pcAngle);
-            Complex cs  = info.Cs[sym, tone];
+            Complex cs  = info.Cs[sym * NTones + tone];
             double aRe  = (cs.Real * pcRe - cs.Imaginary * pcIm) * 2.0 / (NBase * sqrtNDown);
             double aIm  = (cs.Real * pcIm + cs.Imaginary * pcRe) * 2.0 / (NBase * sqrtNDown);
 
@@ -496,6 +497,8 @@ public sealed class Ft8Decoder : BaseDecoder
         // cdShift: the half-bin shifted baseband — pooling is safe because it is
         // never passed to Fft.InverseInPlace (filled by a manual rotation loop).
         Complex[] cdShift = ArrayPool<Complex>.Shared.Rent(Nfft2);
+        // Rent(32) returns exactly 32 elements, as required by the ForwardInPlace fast path.
+        Complex[] cbuf32  = ArrayPool<Complex>.Shared.Rent(NBase);
 
         try
         {
@@ -527,8 +530,7 @@ public sealed class Ft8Decoder : BaseDecoder
                 }
 
                 // ─ Extract per-symbol spectra ─────────────────────────────────────
-                var cs     = new Complex[NSymbols, 8];
-                var cbuf32 = new Complex[NBase];
+                var cs = new Complex[NSymbols * NTones];  // not pooled: escapes into DecodeInfo
                 for (int sym = 0; sym < NSymbols; sym++)
                 {
                     int start = ibest + sym * NBase;
@@ -538,8 +540,7 @@ public sealed class Ft8Decoder : BaseDecoder
                         cbuf32[i] = (uint)idx < (uint)Nfft2 ? cd[idx] : Complex.Zero;
                     }
                     Fft.ForwardInPlace(cbuf32);
-                    for (int tone = 0; tone < 8; tone++)
-                        cs[sym, tone] = cbuf32[tone];
+                    cbuf32.AsSpan(0, NTones).CopyTo(cs.AsSpan(sym * NTones));
                 }
 
                 ComputeMultiSymbolBmet(cs, bmeta, bmetb, bmetc, bmetd);
@@ -656,6 +657,7 @@ public sealed class Ft8Decoder : BaseDecoder
             ArrayPool<bool>.Shared.Return(msg77);
             ArrayPool<bool>.Shared.Return(cw);
             ArrayPool<Complex>.Shared.Return(cdShift);
+            ArrayPool<Complex>.Shared.Return(cbuf32);
         }
     }
 
@@ -708,7 +710,7 @@ public sealed class Ft8Decoder : BaseDecoder
     /// in <paramref name="cs"/> gives a global noise-floor baseline that prevents
     /// artificially low SNR in crowded bands where all adjacent tones carry signals.</para>
     /// </summary>
-    private static double ComputeSnrDb(Complex[,] cs)
+    private static double ComputeSnrDb(Complex[] cs)
     {
         double sigSum = 0, noiseSum = 0;
         int count = 0;
@@ -721,7 +723,7 @@ public sealed class Ft8Decoder : BaseDecoder
                 int expTone = CostasSeq[k];
                 for (int t = 0; t < 8; t++)
                 {
-                    double pow = cs[sym, t].MagnitudeSquared;
+                    double pow = cs[sym * NTones + t].MagnitudeSquared;
                     if (t == expTone) sigSum  += pow;
                     else              noiseSum += pow;
                 }
@@ -746,15 +748,14 @@ public sealed class Ft8Decoder : BaseDecoder
     /// <paramref name="cs"/>.  This is the xbase noise-floor estimate used by WSJT-X 3.0
     /// to prevent SNR inflation when all adjacent tones carry competing signals.
     /// </summary>
-    private static double ComputeXbase(Complex[,] cs)
+    private static double ComputeXbase(Complex[] cs)
     {
         const int Total = NSymbols * 8;  // 79 × 8 = 632
         Span<double> pows = stackalloc double[Total];
         int idx = 0;
         for (int sym = 0; sym < NSymbols; sym++)
-            for (int t = 0; t < 8; t++)
-                pows[idx++] = cs[sym, t].Real   * cs[sym, t].Real
-                            + cs[sym, t].Imaginary * cs[sym, t].Imaginary;
+            for (int t = 0; t < NTones; t++)
+                pows[idx++] = cs[sym * NTones + t].MagnitudeSquared;
 
         // Partial sort: find the value at the 5th percentile index (index 31 of 632).
         // Use a simple selection approach: find the 5th-percentile index.
@@ -790,10 +791,10 @@ public sealed class Ft8Decoder : BaseDecoder
     }
 
     // Extracts cs[79,8] from cd0 at the given ibest — used when the freq-shift pass succeeds.
-    private static Complex[,] ExtractCs(Complex[] cd0, int ibest)
+    private static Complex[] ExtractCs(Complex[] cd0, int ibest)
     {
-        var cs     = new Complex[NSymbols, 8];
-        var cbuf32 = new Complex[NBase];
+        var       cs     = new Complex[NSymbols * NTones];
+        Complex[] cbuf32 = ArrayPool<Complex>.Shared.Rent(NBase);
         for (int sym = 0; sym < NSymbols; sym++)
         {
             int start = ibest + sym * NBase;
@@ -803,9 +804,9 @@ public sealed class Ft8Decoder : BaseDecoder
                 cbuf32[i] = (uint)idx < (uint)cd0.Length ? cd0[idx] : Complex.Zero;
             }
             Fft.ForwardInPlace(cbuf32);
-            for (int tone = 0; tone < 8; tone++)
-                cs[sym, tone] = cbuf32[tone];
+            cbuf32.AsSpan(0, NTones).CopyTo(cs.AsSpan(sym * NTones));
         }
+        ArrayPool<Complex>.Shared.Return(cbuf32);
         return cs;
     }
 
@@ -940,7 +941,7 @@ public sealed class Ft8Decoder : BaseDecoder
     /// (nsym=1 normalised by max) exactly as in WSJT-X ft8b.f90 / MSHV decoderft8var.cpp.
     /// </summary>
     private static void ComputeMultiSymbolBmet(
-        Complex[,] cs,
+        Complex[] cs,
         double[] bmeta, double[] bmetb, double[] bmetc, double[] bmetd)
     {
         // Per-symbol inverse-RMS for equal-contribution coherent combining (nsym≥2).
@@ -952,8 +953,8 @@ public sealed class Ft8Decoder : BaseDecoder
         for (int sym = 0; sym < NSymbols; sym++)
         {
             double sq = 0;
-            for (int t = 0; t < 8; t++)
-                sq += cs[sym, t].MagnitudeSquared;
+            for (int t = 0; t < NTones; t++)
+                sq += cs[sym * NTones + t].MagnitudeSquared;
             double rms = Math.Sqrt(sq * (1.0 / 8));
             symInvRms[sym] = rms > 1e-10 ? 1.0 / rms : 0.0;
         }
@@ -1048,14 +1049,14 @@ public sealed class Ft8Decoder : BaseDecoder
         }
     }
 
-    // Returns a ref to cs[sym, tone], or a ref to a zero sentinel if out of bounds.
+    // Returns a ref to cs[sym * NTones + tone], or a ref to a zero sentinel if out of bounds.
     private static readonly Complex _csZero = Complex.Zero;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static ref readonly Complex GetCs(Complex[,] cs, int sym, int tone)
+    private static ref readonly Complex GetCs(Complex[] cs, int sym, int tone)
     {
         if ((uint)sym < NSymbols)
-            return ref cs[sym, tone];
+            return ref cs[sym * NTones + tone];
         return ref _csZero;
     }
 

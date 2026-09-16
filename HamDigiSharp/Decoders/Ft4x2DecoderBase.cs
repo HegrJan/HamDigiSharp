@@ -25,6 +25,11 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
     // ── Shared frame constants ────────────────────────────────────────────────
     protected const int NSymbols    = 103;
     protected const int NBins       = 4;
+    /// <summary>Length of the flattened per-symbol magnitude array s4[sym * NBins + tone].</summary>
+    protected const int S4Size      = NSymbols * NBins;
+
+    // All-zero s4 for accumulated-LLR decodes that have no fresh per-symbol magnitudes (read-only).
+    private static readonly double[] EmptyS4 = new double[S4Size];
     protected const int SampleRate  = 12_000;
 
     // LLR scale factor applied before LDPC belief-propagation.
@@ -366,10 +371,10 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
     // ── LLR computation from 87 data symbols ─────────────────────────────────
 
     /// <summary>
-    /// Fills <paramref name="s4"/>[sym, tone] with per-symbol FFT magnitudes,
+    /// Fills <paramref name="s4"/>[sym * NBins + tone] with per-symbol FFT magnitudes,
     /// checks sync quality, then extracts 174 soft LLR values.
     /// </summary>
-    protected double[]? ComputeLlr(Complex[] cd, double[,] s4, int minCostasMatches)
+    protected double[]? ComputeLlr(Complex[] cd, double[] s4, int minCostasMatches)
     {
         int nss  = Nss;
         // Pool the per-symbol FFT scratch buffer — nss=32 is a power of 2 so the pool
@@ -382,7 +387,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
                 for (int z = 0; z < nss; z++) cbuf[z] = cd[k * nss + z];
                 Fft.ForwardInPlace(cbuf);
                 for (int x = 0; x < NBins; x++)
-                    s4[k, x] = Math.Sqrt(cbuf[x].MagnitudeSquared);
+                    s4[k * NBins + x] = Math.Sqrt(cbuf[x].MagnitudeSquared);
             }
         }
         finally { ArrayPool<Complex>.Shared.Return(cbuf); }
@@ -400,7 +405,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
                 double max1 = double.MinValue, max0 = double.MinValue;
                 for (int t = 0; t < 4; t++)
                 {
-                    double v   = s4[sym, GrayMap[t]];
+                    double v   = s4[sym * NBins + GrayMap[t]];
                     bool   bit = ((t >> bitPass) & 1) != 0;
                     if (bit) { if (v > max1) max1 = v; }
                     else     { if (v > max0) max0 = v; }
@@ -427,7 +432,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
     /// Duplicate offsets near signal boundaries are automatically de-duplicated.
     /// </summary>
     protected double[]? ComputeTimingCombinedLlr(
-        Complex[] c1, int dtBest, int minCostasMatches, double[,] s4Nominal)
+        Complex[] c1, int dtBest, int minCostasMatches, double[] s4Nominal)
     {
         int nFft2   = c1.Length;
         int step    = TimingHalfStep;
@@ -435,7 +440,11 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
         int maxDt   = Math.Max(0, nFft2 - NSymbols * Nss);
         int cdCount = NSymbols * Nss;
 
-        Complex[] cdBuf = ArrayPool<Complex>.Shared.Rent(cdCount);
+        // Rent a single cd buffer reused across all timing channels.
+        // Pool returns power-of-2 size (4096 for cdCount=3296) which is safe here:
+        // FillAtOffset and ComputeLlr only access indices 0..cdCount-1.
+        Complex[] cdBuf   = ArrayPool<Complex>.Shared.Rent(cdCount);
+        double[]  s4Other = ArrayPool<double>.Shared.Rent(S4Size); // scratch; fully overwritten by ComputeLlr
         try
         {
             // Nominal channel (also fills s4Nominal for SNR measurement).
@@ -455,7 +464,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
                 if (!seen.Add(clamped)) continue;
 
                 FillAtOffset(c1, clamped, cdBuf, cdCount);
-                var llrOther = ComputeLlr(cdBuf, new double[NSymbols, NBins], minCostasMatches);
+                var llrOther = ComputeLlr(cdBuf, s4Other, minCostasMatches);
                 if (llrOther is not null) channels.Add(llrOther);
             }
 
@@ -476,6 +485,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
         finally
         {
             ArrayPool<Complex>.Shared.Return(cdBuf);
+            ArrayPool<double>.Shared.Return(s4Other);
         }
     }
 
@@ -577,7 +587,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
 
     // ── Costas pilot quality check ────────────────────────────────────────────
 
-    protected static int CountCostasMatches(double[,] s4)
+    protected static int CountCostasMatches(double[] s4)
     {
         int matches = 0;
         for (int g = 0; g < 4; g++)
@@ -587,9 +597,10 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
             {
                 int sym = CostasOffsets[g] + k;
                 if (sym >= NSymbols) break;
+                int row  = sym * NBins;
                 int peak = 0;
                 for (int t = 1; t < NBins; t++)
-                    if (s4[sym, t] > s4[sym, peak]) peak = t;
+                    if (s4[row + t] > s4[row + peak]) peak = t;
                 if (peak == cos[k]) matches++;
             }
         }
@@ -607,7 +618,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
     /// per-tone magnitudes provides a global noise-floor baseline that prevents
     /// SNR inflation when adjacent tones carry competing signals (crowded band).</para>
     /// </summary>
-    protected double ComputeSnrDb4Fsk(double[,] s4)
+    protected double ComputeSnrDb4Fsk(double[] s4)
     {
         double sigSum = 0, noiseSum = 0;
         int    count  = 0;
@@ -622,7 +633,8 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
                 int expTone = cos[k];
                 for (int t = 0; t < NBins; t++)
                 {
-                    double pow = s4[sym, t] * s4[sym, t];   // s4 holds magnitudes
+                    double mag = s4[sym * NBins + t];   // s4 holds magnitudes
+                    double pow = mag * mag;
                     if (t == expTone) sigSum   += pow;
                     else              noiseSum  += pow;
                 }
@@ -646,7 +658,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
     /// symbols × 4 tones = 64 values in <paramref name="s4"/> (s4 holds magnitudes).
     /// Used as the xbase noise-floor estimate for SNR computation.
     /// </summary>
-    private static double ComputeXbase4Fsk(double[,] s4)
+    private static double ComputeXbase4Fsk(double[] s4)
     {
         const int Total = 16 * NBins; // 64
         Span<double> pows = stackalloc double[Total];
@@ -659,7 +671,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
                 int sym = CostasOffsets[g] + k;
                 if (sym >= NSymbols) { for (int t2 = 0; t2 < NBins; t2++) pows[idx++] = 0; continue; }
                 for (int t = 0; t < NBins; t++)
-                    pows[idx++] = s4[sym, t] * s4[sym, t];
+                    pows[idx++] = s4[sym * NBins + t] * s4[sym * NBins + t];
             }
         }
 
@@ -746,7 +758,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
     /// </summary>
     protected bool TryLdpcVariants(
         double[]? llrA, double[]? llrB, double f0, double dt, string utcTime,
-        double[,] s4, ref DecodeResult? result)
+        double[] s4, ref DecodeResult? result)
     {
         bool[] msg77 = ArrayPool<bool>.Shared.Rent(77);
         bool[] cw    = ArrayPool<bool>.Shared.Rent(174);
@@ -890,7 +902,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
     /// </summary>
     protected bool TryDecodeBuffer3Timing(
         Complex[] c1, int dtBest, double f0, double dt, string utcTime,
-        double[,] s4, ref DecodeResult? result)
+        double[] s4, ref DecodeResult? result)
     {
         double[]? llrTiming = ComputeTimingCombinedLlr(c1, dtBest, MinCostasMatches, s4);
         if (llrTiming is null) return false;
@@ -898,17 +910,19 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
         int       cdCount = NSymbols * Nss;
         Complex[] cdBuf   = ArrayPool<Complex>.Shared.Rent(cdCount);
         Complex[] shifted = ArrayPool<Complex>.Shared.Rent(cdCount);
+        double[]  s4Half  = ArrayPool<double>.Shared.Rent(S4Size);
         try
         {
             FillAtOffset(c1, dtBest, cdBuf, cdCount);
             FillShiftedByHalfTone(cdBuf, Nss, shifted, cdCount);
-            double[]? llrHalfTone = ComputeLlr(shifted, new double[NSymbols, NBins], MinCostasMatches);
+            double[]? llrHalfTone = ComputeLlr(shifted, s4Half, MinCostasMatches);
             return TryLdpcVariants(llrTiming, llrHalfTone, f0, dt, utcTime, s4, ref result);
         }
         finally
         {
             ArrayPool<Complex>.Shared.Return(cdBuf);
             ArrayPool<Complex>.Shared.Return(shifted);
+            ArrayPool<double>.Shared.Return(s4Half);
         }
     }
 
@@ -972,7 +986,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
             .AsParallel()
             .Select(freq =>
             {
-                var    s4     = new double[NSymbols, NBins];
+                var    s4     = new double[S4Size];
                 var    c1     = GetBaseband(xFull, freq);
                 int    dtBest = FindBestTimingOffset(c1, c1.Length);
                 double dt     = dtBest * _nDown / (double)SampleRate;
@@ -984,17 +998,19 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
                 int       cdCount2 = NSymbols * Nss;
                 Complex[] cdBuf2   = ArrayPool<Complex>.Shared.Rent(cdCount2);
                 Complex[] shifted2 = ArrayPool<Complex>.Shared.Rent(cdCount2);
+                double[]  s4Half   = ArrayPool<double>.Shared.Rent(S4Size);
                 double[]? llrHT;
                 try
                 {
                     FillAtOffset(c1, dtBest, cdBuf2, cdCount2);
                     FillShiftedByHalfTone(cdBuf2, Nss, shifted2, cdCount2);
-                    llrHT = ComputeLlr(shifted2, new double[NSymbols, NBins], MinCostasMatches);
+                    llrHT = ComputeLlr(shifted2, s4Half, MinCostasMatches);
                 }
                 finally
                 {
                     ArrayPool<Complex>.Shared.Return(cdBuf2);
                     ArrayPool<Complex>.Shared.Return(shifted2);
+                    ArrayPool<double>.Shared.Return(s4Half);
                 }
 
                 var nA = RmsNorm(llrT);
@@ -1053,9 +1069,8 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
                 var scaledLlr = RmsScale(fa.LlrSum, LlrScaleFactor);
                 if (scaledLlr is null) return (key, null);
 
-                var          emptyS4 = new double[NSymbols, NBins];
-                DecodeResult? res    = null;
-                TryLdpcVariants(scaledLlr, scaledLlr, fa.LastFreq, fa.LastDt, utcTime, emptyS4, ref res);
+                DecodeResult? res = null;
+                TryLdpcVariants(scaledLlr, scaledLlr, fa.LastFreq, fa.LastDt, utcTime, EmptyS4, ref res);
                 if (res is not null) res = res with { Snr = fa.LastSnr };
                 return (key, res);
             })
@@ -1115,7 +1130,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
                     .AsParallel()
                     .Select(freq =>
                     {
-                        var    s4Local = new double[NSymbols, NBins];
+                        var    s4Local = new double[S4Size];
                         var    c1      = GetBaseband(xFull, freq);
                         int    dtBest  = FindBestTimingOffset(c1, c1.Length);
                         double dt      = dtBest * _nDown / (double)SampleRate;

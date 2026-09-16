@@ -86,6 +86,18 @@ public static class Ldpc128_90
         {24, 38, 43, 61, 67, 86, 98,103,124,127,  0}
     };
 
+    // 0-based flattened copies of Mn/Nm for the hot BP loops: X[row * cols + col].
+    private static readonly int[] MnIdx = FlattenZeroBased(Mn);
+    private static readonly int[] NmIdx = FlattenZeroBased(Nm);
+
+    private static int[] FlattenZeroBased(int[,] table)
+    {
+        var flat = new int[table.Length];
+        int k = 0;
+        foreach (int v in table) flat[k++] = v - 1;   // row-major; unused 0 entries become -1
+        return flat;
+    }
+
     private static readonly int[] Nrw =
     {
         10,10,11,10,11,11,10,10,10,10,10,10,10,10,10,10,10,10,
@@ -141,7 +153,7 @@ public static class Ldpc128_90
         // Initialise toc from LLR
         for (int j = 0; j < M; j++)
             for (int i = 0; i < Nrw[j]; i++)
-                toc[j * 11 + i] = llr[Nm[j, i] - 1];
+                toc[j * 11 + i] = llr[NmIdx[j * 11 + i]];
 
         int ncnt = 0, nclast = 0;
         try
@@ -160,7 +172,7 @@ public static class Ldpc128_90
                 for (int i = 0; i < M; i++)
                 {
                     int sum = 0;
-                    for (int x = 0; x < Nrw[i]; x++) sum += cw[Nm[i, x] - 1] ? 1 : 0;
+                    for (int x = 0; x < Nrw[i]; x++) sum += cw[NmIdx[i * 11 + x]] ? 1 : 0;
                     if (sum % 2 != 0) ncheck++;
                 }
 
@@ -191,10 +203,10 @@ public static class Ldpc128_90
                     int jBase = j * 11;
                     for (int i = 0; i < Nrw[j]; i++)
                     {
-                        int ibj = Nm[j, i] - 1;
+                        int ibj = NmIdx[j * 11 + i];
                         double t = zn[ibj];
                         for (int kk = 0; kk < 3; kk++)
-                            if (Mn[ibj, kk] - 1 == j)
+                            if (MnIdx[ibj * 3 + kk] == j)
                                 t -= tov[ibj * 3 + kk];
                         toc[jBase + i] = t;
                     }
@@ -206,12 +218,12 @@ public static class Ldpc128_90
                     int jBase3 = j * 3;
                     for (int i = 0; i < 3; i++)
                     {
-                        int ichk     = Mn[j, i] - 1;
+                        int ichk     = MnIdx[j * 3 + i];
                         int ichkBase = ichk * 11;
                         double tmn   = 1.0;
                         for (int z = 0; z < Nrw[ichk]; z++)
                         {
-                            if (Nm[ichk, z] - 1 != j)
+                            if (NmIdx[ichk * 11 + z] != j)
                                 tmn *= SignalMath.FastTanh(-toc[ichkBase + z] * 0.5);
                         }
                         tmn = Math.Max(-0.9999999, Math.Min(0.9999999, tmn));
@@ -342,7 +354,7 @@ public static class Ldpc128_90
         {
             int parity = 0;
             for (int x = 0; x < Nrw[i]; x++)
-                parity ^= codeword128[Nm[i, x] - 1] ? 1 : 0;
+                parity ^= codeword128[NmIdx[i * 11 + x]] ? 1 : 0;
             if (parity != 0) return false;
         }
         return true;
