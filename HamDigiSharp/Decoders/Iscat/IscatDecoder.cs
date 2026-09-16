@@ -54,7 +54,7 @@ public sealed class IscatDecoder : BaseDecoder
         ReadOnlySpan<float> samples, double freqLow, double freqHigh, string utcTime)
     {
         int npts0 = Math.Min(samples.Length, NMax);
-        if (npts0 < 1) return Array.Empty<DecodeResult>();
+        if (npts0 < 1) return [];
 
         Complex[] cdat0 = Ana932(samples, npts0);
         var results = new List<DecodeResult>();
@@ -263,7 +263,7 @@ public sealed class IscatDecoder : BaseDecoder
             int rowBase = j * s0Cols;
             for (int i = 0; i < nfft; i++)
             {
-                double ps = cSym[i].Real * cSym[i].Real + cSym[i].Imaginary * cSym[i].Imaginary;
+                double ps = cSym[i].MagnitudeSquared;
                 s0Flat[rowBase + i] = ps;
                 savg[i] += ps;
             }

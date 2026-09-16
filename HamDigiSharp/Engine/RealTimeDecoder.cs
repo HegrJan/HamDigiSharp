@@ -106,7 +106,7 @@ public sealed class RealTimeDecoder : IDisposable, IAsyncDisposable
     // This removes the TOCTOU window that existed when _decoding was an int managed
     // with Interlocked operations outside the lock.
     private bool _decoding;
-    private readonly object _pendingLock = new();
+    private readonly Lock _pendingLock = new();
     private (Task<IReadOnlyList<DecodeResult>>? task, DateTimeOffset windowStart)? _pendingPeriod;
     // Tracks the currently running decode task for graceful DisposeAsync drain.
     private Task? _activeDecodeTask;
@@ -201,10 +201,9 @@ public sealed class RealTimeDecoder : IDisposable, IAsyncDisposable
     /// </summary>
     public DecoderOptions RealTimeOptions
     {
-        get => _rtOptions;
-        set { _rtOptions = value; _rtEngine.Configure(value); }
-    }
-    private DecoderOptions _rtOptions = new()
+        get;
+        set { field = value; _rtEngine.Configure(value); }
+    } = new()
     {
         DecoderDepth     = DecoderDepth.Normal,  // BP + OSD order-1 (matches WSJT-X depth 2)
         MaxCandidates    = 75,   // overridden per-mode in constructor
@@ -240,7 +239,7 @@ public sealed class RealTimeDecoder : IDisposable, IAsyncDisposable
     /// <param name="captureRate">Sample rate of audio fed to <see cref="AddSamples"/>.</param>
     public RealTimeDecoder(DigitalMode mode, int captureRate)
     {
-        if (captureRate <= 0) throw new ArgumentOutOfRangeException(nameof(captureRate));
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(captureRate);
 
         _mode        = mode;
         _captureRate = captureRate;
@@ -271,12 +270,12 @@ public sealed class RealTimeDecoder : IDisposable, IAsyncDisposable
         // The FT2 multi-period LLR accumulation path scans all ~270 frequency bins in
         // every call without a spectrogram threshold gate, which is too slow for the
         // RT latency budget and produces zero decodes on the first period.
-        _rtOptions.AveragingEnabled = false;
-        _rtOptions.MaxCandidates    = RtMaxCandidates(mode);
+        RealTimeOptions.AveragingEnabled = false;
+        RealTimeOptions.MaxCandidates    = RtMaxCandidates(mode);
 
         // Create and configure the dedicated fast engine.
         _rtEngine = new DecoderEngine();
-        _rtEngine.Configure(_rtOptions);
+        _rtEngine.Configure(RealTimeOptions);
     }
 
     /// <param name="engine">
@@ -462,7 +461,7 @@ public sealed class RealTimeDecoder : IDisposable, IAsyncDisposable
             {
                 try
                 {
-                    IReadOnlyList<DecodeResult> rawResults = Array.Empty<DecodeResult>();
+                    IReadOnlyList<DecodeResult> rawResults = [];
                     if (primaryTask is not null)
                         rawResults = await primaryTask;
 
@@ -475,7 +474,7 @@ public sealed class RealTimeDecoder : IDisposable, IAsyncDisposable
 
                     var unique = corrected
                         .GroupBy(r => r.Message, StringComparer.Ordinal)
-                        .Select(g => g.OrderByDescending(r => r.Snr).First())
+                        .Select(g => g.MaxBy(r => r.Snr)!)
                         .OrderByDescending(r => r.Snr)
                         .ToList();
 
@@ -573,7 +572,7 @@ public sealed class RealTimeDecoder : IDisposable, IAsyncDisposable
     /// </summary>
     private void UpdateA7Cache(IReadOnlyList<DecodeResult> results)
     {
-        string myCall = _rtOptions.MyCall;
+        string myCall = RealTimeOptions.MyCall;
         if (string.IsNullOrWhiteSpace(myCall)) return;
 
         // Strip /P, /M, /QRP suffixes for matching
@@ -625,7 +624,7 @@ public sealed class RealTimeDecoder : IDisposable, IAsyncDisposable
     {
         if (string.IsNullOrEmpty(_a7HisCall)) return;
         // Mutate the options object: HisCall is the only a7 field updated here.
-        _rtOptions.HisCall = _a7HisCall;
-        _rtEngine.Configure(_rtOptions);
+        RealTimeOptions.HisCall = _a7HisCall;
+        _rtEngine.Configure(RealTimeOptions);
     }
 }

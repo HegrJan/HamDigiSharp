@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Numerics;
+using System.Numerics.Tensors;
 using System.Runtime.CompilerServices;
 using HamDigiSharp.Codecs;
 using HamDigiSharp.Dsp;
@@ -80,12 +81,12 @@ public sealed class Ft8Decoder : BaseDecoder
     public override IReadOnlyList<DecodeResult> Decode(
         ReadOnlySpan<float> samples, double freqLow, double freqHigh, string utcTime)
     {
-        if (samples.Length < BlockSize * 4) return Array.Empty<DecodeResult>();
+        if (samples.Length < BlockSize * 4) return [];
 
         // ─ 1. Frequency range → waterfall bin limits ─────────────────────────
         int minBin = (int)(freqLow  * SymPeriod);
         int maxBin = (int)(freqHigh * SymPeriod) + 1;
-        if (maxBin - minBin < 8) return Array.Empty<DecodeResult>();
+        if (maxBin - minBin < 8) return [];
 
         int numBins     = maxBin - minBin;
         int blockStride = TimeOsr * FreqOsr * numBins;
@@ -309,9 +310,11 @@ public sealed class Ft8Decoder : BaseDecoder
         int frameOverlap = Nfft - Subblock;     // = 2880 samples of history per frame
 
         Parallel.For(0, MaxBlocks,
-            () => new Complex[Nfft],            // thread-local FFT work buffer
-            (block, _, cbuf) =>
+            // thread-local FFT work buffer + per-row power scratch
+            () => (Cbuf: new Complex[Nfft], Pow: new double[numBins]),
+            (block, _, ls) =>
             {
+                var (cbuf, pow) = ls;
                 int blockStart = block * BlockSize;
                 int wfBase     = block * blockStride;
 
@@ -333,15 +336,15 @@ public sealed class Ft8Decoder : BaseDecoder
                     {
                         int wfRow = wfBase + tsub * FreqOsr * numBins + fsub * numBins;
                         for (int bin = 0; bin < numBins; bin++)
-                        {
-                            int srcBin = (minBin + bin) * FreqOsr + fsub;
-                            double re  = cbuf[srcBin].Real;
-                            double im  = cbuf[srcBin].Imaginary;
-                            wf[wfRow + bin] = (float)(10.0 * Math.Log10(1e-12 + re * re + im * im));
-                        }
+                            pow[bin] = 1e-12 + cbuf[(minBin + bin) * FreqOsr + fsub].MagnitudeSquared;
+
+                        // dB = 10·log10(1e-12 + |X|²), vectorised over the row
+                        TensorPrimitives.Log10(pow, pow);
+                        TensorPrimitives.Multiply(pow, 10.0, pow);
+                        TensorPrimitives.ConvertTruncating<double, float>(pow, wf.AsSpan(wfRow, numBins));
                     }
                 }
-                return cbuf;
+                return ls;
             },
             _ => { });
     }
@@ -718,8 +721,7 @@ public sealed class Ft8Decoder : BaseDecoder
                 int expTone = CostasSeq[k];
                 for (int t = 0; t < 8; t++)
                 {
-                    double pow = cs[sym, t].Real * cs[sym, t].Real
-                               + cs[sym, t].Imaginary * cs[sym, t].Imaginary;
+                    double pow = cs[sym, t].MagnitudeSquared;
                     if (t == expTone) sigSum  += pow;
                     else              noiseSum += pow;
                 }
@@ -861,13 +863,11 @@ public sealed class Ft8Decoder : BaseDecoder
                 Fft.ForwardInPlace(cbuf);
 
                 int expTone = CostasSeq[k];
-                double sigPow  = cbuf[expTone].Real * cbuf[expTone].Real
-                               + cbuf[expTone].Imaginary * cbuf[expTone].Imaginary;
+                double sigPow  = cbuf[expTone].MagnitudeSquared;
                 double noisePow = 1e-20;
                 for (int tone = 0; tone < 8; tone++)
                     if (tone != expTone)
-                        noisePow += cbuf[tone].Real * cbuf[tone].Real
-                                  + cbuf[tone].Imaginary * cbuf[tone].Imaginary;
+                        noisePow += cbuf[tone].MagnitudeSquared;
                 score += sigPow / (noisePow / 7 + 1e-20);
             }
         }
@@ -953,10 +953,7 @@ public sealed class Ft8Decoder : BaseDecoder
         {
             double sq = 0;
             for (int t = 0; t < 8; t++)
-            {
-                double r = cs[sym, t].Real, x = cs[sym, t].Imaginary;
-                sq += r * r + x * x;
-            }
+                sq += cs[sym, t].MagnitudeSquared;
             double rms = Math.Sqrt(sq * (1.0 / 8));
             symInvRms[sym] = rms > 1e-10 ? 1.0 / rms : 0.0;
         }
@@ -1070,39 +1067,10 @@ public sealed class Ft8Decoder : BaseDecoder
     /// </summary>
     private static void NormalizeBmet(double[] bmet)
     {
-        int n = bmet.Length;
-        double sum2 = 0.0;
-
-        if (Vector.IsHardwareAccelerated)
-        {
-            int vw = Vector<double>.Count;
-            int vLen = n - (n % vw);
-            var vSum2 = Vector<double>.Zero;
-            for (int i = 0; i < vLen; i += vw)
-            {
-                var v = new Vector<double>(bmet, i);
-                vSum2 += v * v;
-            }
-            for (int lane = 0; lane < vw; lane++) sum2 += vSum2[lane];
-            for (int i = vLen; i < n; i++) sum2 += bmet[i] * bmet[i];
-
-            double sigma = sum2 > 0 ? Math.Sqrt(sum2 / n) : 1e-5;
-            if (sigma < 1e-5) sigma = 1e-5;
-            double inv = 1.0 / sigma;
-
-            var vInv = new Vector<double>(inv);
-            for (int i = 0; i < vLen; i += vw)
-                (new Vector<double>(bmet, i) * vInv).CopyTo(bmet, i);
-            for (int i = vLen; i < n; i++) bmet[i] *= inv;
-        }
-        else
-        {
-            for (int i = 0; i < n; i++) sum2 += bmet[i] * bmet[i];
-            double sigma = sum2 > 0 ? Math.Sqrt(sum2 / n) : 1e-5;
-            if (sigma < 1e-5) sigma = 1e-5;
-            double inv = 1.0 / sigma;
-            for (int i = 0; i < n; i++) bmet[i] *= inv;
-        }
+        double sum2  = TensorPrimitives.SumOfSquares<double>(bmet);
+        double sigma = sum2 > 0 ? Math.Sqrt(sum2 / bmet.Length) : 1e-5;
+        if (sigma < 1e-5) sigma = 1e-5;
+        TensorPrimitives.Multiply(bmet, 1.0 / sigma, bmet);
     }
 
     // Min-heap helpers (by Score, ascending — so heap[0] is the WORST/lowest score)

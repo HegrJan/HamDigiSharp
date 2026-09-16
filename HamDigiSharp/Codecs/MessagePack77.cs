@@ -23,7 +23,7 @@ public static class MessagePack77
     /// </summary>
     public static bool TryPack77(string message, bool[] c77)
     {
-        if (c77.Length < 77) throw new ArgumentException("c77 must be at least 77 elements.");
+        ArgumentOutOfRangeException.ThrowIfLessThan(c77.Length, 77, nameof(c77));
         Array.Clear(c77, 0, 77);
 
         string msg    = message.Trim().ToUpperInvariant();

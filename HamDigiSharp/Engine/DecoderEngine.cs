@@ -99,7 +99,7 @@ public sealed class DecoderEngine : IDisposable
         CancellationToken cancellationToken = default)
     {
         if (!_decoders.TryGetValue(mode, out var dec))
-            return Task.FromResult<IReadOnlyList<DecodeResult>>(Array.Empty<DecodeResult>());
+            return Task.FromResult<IReadOnlyList<DecodeResult>>([]);
 
         return Task.Run(() => dec.Decode(samples, freqLow, freqHigh, utcTime), cancellationToken);
     }
@@ -113,7 +113,7 @@ public sealed class DecoderEngine : IDisposable
         string utcTime)
     {
         if (!_decoders.TryGetValue(mode, out var dec))
-            return Array.Empty<DecodeResult>();
+            return [];
 
         return dec.Decode(samples, freqLow, freqHigh, utcTime);
     }

@@ -413,7 +413,7 @@ internal static class WsprConv
     {
         const int N = OsdN, K = OsdK, Nt = OsdNt;
 
-        decoded = Array.Empty<byte>();
+        decoded = [];
 
         // ── 1. Normalize and hard-decide ──────────────────────────────────────
         Span<float> rx     = stackalloc float[N];

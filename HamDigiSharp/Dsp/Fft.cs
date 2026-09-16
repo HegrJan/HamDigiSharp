@@ -171,7 +171,7 @@ public static class Fft
         Fourier.Forward(c, FourierOptions.AsymmetricScaling);
         var ps = new double[n / 2 + 1];
         for (int i = 0; i < ps.Length; i++)
-            ps[i] = c[i].Real * c[i].Real + c[i].Imaginary * c[i].Imaginary;
+            ps[i] = c[i].MagnitudeSquared;
         return ps;
     }
 }

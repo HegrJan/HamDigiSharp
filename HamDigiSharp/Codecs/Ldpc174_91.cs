@@ -158,8 +158,8 @@ public static class Ldpc174_91
     /// <param name="codeword174">Output 174-bit codeword (bits 0..90 = systematic, 91..173 = parity).</param>
     public static void Encode(ReadOnlySpan<bool> message77, Span<bool> codeword174)
     {
-        if (message77.Length < 77)   throw new ArgumentException("message77 must have at least 77 elements", nameof(message77));
-        if (codeword174.Length < 174) throw new ArgumentException("codeword174 must have at least 174 elements", nameof(codeword174));
+        ArgumentOutOfRangeException.ThrowIfLessThan(message77.Length, 77, nameof(message77));
+        ArgumentOutOfRangeException.ThrowIfLessThan(codeword174.Length, 174, nameof(codeword174));
 
         // Build 91-bit message = msg77 + CRC14
         Span<bool> msg91 = stackalloc bool[91];

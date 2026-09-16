@@ -65,7 +65,7 @@ public sealed class MessagePacker
     private readonly int[] _hash22 = new int[650];
     private readonly string[] _hashCall = new string[650];
     private int _hashWritePos = 16; // start after reserved slots
-    private readonly object _hashLock = new();
+    private readonly Lock _hashLock = new();
 
     public MessagePacker() { Array.Fill(_hash10, -1); Array.Fill(_hash12, -1); Array.Fill(_hash22, -1); }
 
@@ -200,7 +200,7 @@ public sealed class MessagePacker
         int j3 = n / 10;
         int j4 = n - j3 * 10;
         if (j1 < 0 || j1 > 17 || j2 < 0 || j2 > 17 || j3 < 0 || j3 > 9 || j4 < 0 || j4 > 9) return false;
-        grid = new string(new[] { (char)('A' + j1), (char)('A' + j2), (char)('0' + j3), (char)('0' + j4) });
+        grid = new string([(char)('A' + j1), (char)('A' + j2), (char)('0' + j3), (char)('0' + j4)]);
         return true;
     }
 
@@ -215,9 +215,9 @@ public sealed class MessagePacker
         int j6 = n - j5 * 24;
         if (j1 < 0 || j1 > 17 || j2 < 0 || j2 > 17 || j3 < 0 || j3 > 9 || j4 < 0 || j4 > 9 ||
             j5 < 0 || j5 > 23 || j6 < 0 || j6 > 23) return false;
-        grid = new string(new[] {
+        grid = new string([
             (char)('A'+j1),(char)('A'+j2),(char)('0'+j3),(char)('0'+j4),(char)('A'+j5),(char)('A'+j6)
-        });
+        ]);
         return true;
     }
 

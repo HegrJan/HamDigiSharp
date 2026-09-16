@@ -238,8 +238,8 @@ public static class Ldpc128_90
     /// </summary>
     public static void Encode(ReadOnlySpan<bool> message77, Span<bool> codeword128)
     {
-        if (message77.Length < 77)    throw new ArgumentException("message77 must have >= 77 elements");
-        if (codeword128.Length < 128) throw new ArgumentException("codeword128 must have >= 128 elements");
+        ArgumentOutOfRangeException.ThrowIfLessThan(message77.Length, 77, nameof(message77));
+        ArgumentOutOfRangeException.ThrowIfLessThan(codeword128.Length, 128, nameof(codeword128));
 
         // Build 90-bit message = msg77 + CRC13
         Span<bool> msg90 = stackalloc bool[90];

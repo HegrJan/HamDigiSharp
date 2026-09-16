@@ -96,7 +96,7 @@ public class Msk144Decoder : BaseDecoder
     public override IReadOnlyList<DecodeResult> Decode(
         ReadOnlySpan<float> samples, double freqLow, double freqHigh, string utcTime)
     {
-        if (samples.Length < SampPerFrame) return Array.Empty<DecodeResult>();
+        if (samples.Length < SampPerFrame) return [];
 
         double[] dd = PrepareBuffer(samples);
         var analytic = AnalyticSignal(dd);

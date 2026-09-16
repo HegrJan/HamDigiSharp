@@ -42,7 +42,7 @@ internal static class WsprPack
 
         // "CQ NNN" – CQ with frequency (NNN = 3-digit integer)
         if (s.Length == 6 && s.StartsWith("CQ ") &&
-            int.TryParse(s.Substring(3), out int nf) && nf >= 0 && nf <= 999)
+            int.TryParse(s.AsSpan(3), out int nf) && nf >= 0 && nf <= 999)
         {
             ncall = (int)NBase + 3 + nf;
             return true;
@@ -51,15 +51,15 @@ internal static class WsprPack
         // ── 3DA0 workaround (Eswatini) ───────────────────────────────────────
         // "3DA0XX" cannot be normalised normally; encode as "3D0XX"
         if (s.Length >= 4 && s.StartsWith("3DA0"))
-            s = "3D0" + s.Substring(4);
+            s = string.Concat("3D0", s.AsSpan(4));
 
         // ── Normalise to 6 characters ────────────────────────────────────────
         // A standard callsign has its digit at position 2 (0-indexed).
-        string tmp = s.PadRight(6).Substring(0, 6);
+        string tmp = s.PadRight(6)[..6];
         if (!(tmp[2] >= '0' && tmp[2] <= '9'))
         {
             // Try left-padding with a space (e.g. "W1AW  " → " W1AW ")
-            tmp = (" " + s).PadRight(6).Substring(0, 6);
+            tmp = (" " + s).PadRight(6)[..6];
         }
 
         // ── Validate ─────────────────────────────────────────────────────────
@@ -123,7 +123,7 @@ internal static class WsprPack
 
         // Reverse the 3DA0 workaround
         if (raw.StartsWith("3D0"))
-            raw = "3DA0" + raw.Substring(3);
+            raw = string.Concat("3DA0", raw.AsSpan(3));
 
         call = raw;
     }
@@ -148,7 +148,7 @@ internal static class WsprPack
 
         // "-NN" (SNR report -01 to -30)
         if (g.Length >= 3 && g[0] == '-' &&
-            int.TryParse(g.Substring(1), out int neg) && neg >= 1 && neg <= 30)
+            int.TryParse(g.AsSpan(1), out int neg) && neg >= 1 && neg <= 30)
         {
             ng = NgBase + 1 + neg;
             return true;
@@ -156,7 +156,7 @@ internal static class WsprPack
 
         // "R-NN"
         if (g.Length >= 4 && g[0] == 'R' && g[1] == '-' &&
-            int.TryParse(g.Substring(2), out int rneg) && rneg >= 1 && rneg <= 30)
+            int.TryParse(g.AsSpan(2), out int rneg) && rneg >= 1 && rneg <= 30)
         {
             ng = NgBase + 31 + rneg;
             return true;

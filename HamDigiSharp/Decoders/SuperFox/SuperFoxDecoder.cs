@@ -162,7 +162,7 @@ public sealed class SuperFoxDecoder : BaseDecoder
     public override IReadOnlyList<DecodeResult> Decode(
         ReadOnlySpan<float> samples, double freqLow, double freqHigh, string utcTime)
     {
-        if (samples.Length < Nmax / 4) return Array.Empty<DecodeResult>();
+        if (samples.Length < Nmax / 4) return [];
 
         var results = new List<DecodeResult>();
         var decoded = new HashSet<string>(StringComparer.Ordinal);
@@ -229,7 +229,7 @@ public sealed class SuperFoxDecoder : BaseDecoder
             }
             Fft.ForwardInPlace(cbuf);
             for (int k = 0; k < nfft; k++)
-                spec[j, k] = cbuf[k].Real * cbuf[k].Real + cbuf[k].Imaginary * cbuf[k].Imaginary;
+                spec[j, k] = cbuf[k].MagnitudeSquared;
         }
 
         double df = (double)SampleRate / nfft;
@@ -338,7 +338,7 @@ public sealed class SuperFoxDecoder : BaseDecoder
             {
                 int bin = fBin0 + b;
                 s[sym, b] = (bin >= 0 && bin < nfft / 2)
-                    ? cbuf[bin].Real * cbuf[bin].Real + cbuf[bin].Imaginary * cbuf[bin].Imaginary
+                    ? cbuf[bin].MagnitudeSquared
                     : 0.0;
             }
         }
@@ -532,7 +532,7 @@ public sealed class SuperFoxDecoder : BaseDecoder
                 int i2 = i1 + nspsd;
                 if (i1 < 0 || i2 < 0 || i1 >= Nz || i2 >= Nz) continue;
                 var z  = c1sum[i2] - c1sum[i1];
-                sp += z.Real * z.Real + z.Imaginary * z.Imaginary;
+                sp += z.MagnitudeSquared;
             }
             if (sp > pmax) { pmax = sp; lagpk = lag; }
         }
@@ -552,7 +552,7 @@ public sealed class SuperFoxDecoder : BaseDecoder
                 int i2 = i1 + nspsd;
                 if (i1 < 0 || i2 < 0 || i1 >= Nz || i2 >= Nz) continue;
                 var z  = c1sum[i2] - c1sum[i1];
-                sp += z.Real * z.Real + z.Imaginary * z.Imaginary;
+                sp += z.MagnitudeSquared;
             }
             pArr[lag + lagmax] = sp;
             double tlag = (lag - lagpk) * dt;

@@ -69,7 +69,7 @@ public sealed class JtmsDecoder : BaseDecoder
     public override IReadOnlyList<DecodeResult> Decode(
         ReadOnlySpan<float> samples, double freqLow, double freqHigh, string utcTime)
     {
-        if (samples.Length < Nsps * 14) return Array.Empty<DecodeResult>();
+        if (samples.Length < Nsps * 14) return [];
 
         double[] dd = PrepareBuffer(samples);
 
@@ -130,14 +130,14 @@ public sealed class JtmsDecoder : BaseDecoder
             c[i] = data[i] * new Complex(Math.Cos(dpha * i), -Math.Sin(dpha * i));
             csum += c[i];
         }
-        power[0] = csum.Real * csum.Real + csum.Imaginary * csum.Imaginary;
+        power[0] = csum.MagnitudeSquared;
 
         for (int i = 1; i < data.Length - Nsps; i++)
         {
             var newC = data[i + Nsps - 1] * new Complex(Math.Cos(dpha * (i + Nsps - 1)), -Math.Sin(dpha * (i + Nsps - 1)));
             csum = csum - c[(i - 1) % Nsps] + newC;
             c[(i - 1) % Nsps] = newC;   // write into the slot we just read, not i%Nsps
-            power[i] = csum.Real * csum.Real + csum.Imaginary * csum.Imaginary;
+            power[i] = csum.MagnitudeSquared;
         }
     }
 

@@ -54,7 +54,7 @@ public sealed class Jt65Decoder : BaseDecoder
     public override IReadOnlyList<DecodeResult> Decode(
         ReadOnlySpan<float> samples, double freqLow, double freqHigh, string utcTime)
     {
-        if (samples.Length < SampleRate * 30) return Array.Empty<DecodeResult>();
+        if (samples.Length < SampleRate * 30) return [];
 
         double toneSpacing = _mode switch
         {
@@ -65,7 +65,7 @@ public sealed class Jt65Decoder : BaseDecoder
 
         double[] dd = PrepareBuffer(samples);
         var candidates = FindCandidates(dd, freqLow, freqHigh, toneSpacing);
-        if (candidates.Count == 0) return Array.Empty<DecodeResult>();
+        if (candidates.Count == 0) return [];
 
         var results = new List<DecodeResult>();
         var decoded = new HashSet<string>();
@@ -120,7 +120,7 @@ public sealed class Jt65Decoder : BaseDecoder
             }
             Fft.ForwardInPlace(cbuf);
             for (int k = 0; k < nfft / 2; k++)
-                savg[k] += cbuf[k].Real * cbuf[k].Real + cbuf[k].Imaginary * cbuf[k].Imaginary;
+                savg[k] += cbuf[k].MagnitudeSquared;
         }
 
         int nfa = Math.Max(0, (int)(freqLow  / df));
@@ -167,7 +167,7 @@ public sealed class Jt65Decoder : BaseDecoder
         var rxdat = new int[Nn];
         Array.Copy(mrsym, rxdat, Nn);
 
-        int nerr = ReedSolomon63.Decode(rxdat, Array.Empty<int>(), 0, false);
+        int nerr = ReedSolomon63.Decode(rxdat, [], 0, false);
         if (nerr < 0) return false;
 
         // Unpack 12 RS data symbols (72 bits) → JT65 message text
@@ -221,8 +221,7 @@ public sealed class Jt65Decoder : BaseDecoder
             {
                 int bin = fBin0 + (t + 2) * binsPerTone;
                 if (bin >= 0 && bin < cbuf.Length)
-                    s3[dataSymIdx, t] = cbuf[bin].Real * cbuf[bin].Real
-                                      + cbuf[bin].Imaginary * cbuf[bin].Imaginary;
+                    s3[dataSymIdx, t] = cbuf[bin].MagnitudeSquared;
             }
             dataSymIdx++;
         }
@@ -408,7 +407,7 @@ public sealed class Jt65Decoder : BaseDecoder
         char c2 = c[n % 37]; n /= 37;
         char c1 = c[n % 37]; n /= 37;
         char c0 = c[n];
-        return new string(new[] { c0, c1, c2, c3 }).Trim();
+        return new string([c0, c1, c2, c3]).Trim();
     }
 
     private static string Decode3CharPsfx(int n, string c)
@@ -416,7 +415,7 @@ public sealed class Jt65Decoder : BaseDecoder
         char c2 = c[n % 37]; n /= 37;
         char c1 = c[n % 37]; n /= 37;
         char c0 = c[n];
-        return new string(new[] { c0, c1, c2 }).Trim();
+        return new string([c0, c1, c2]).Trim();
     }
 
     private static string BuildV2Message(int iv2, string psfx, string call2, string grid)

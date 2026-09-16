@@ -1,3 +1,4 @@
+using HamDigiSharp.Dsp;
 using HamDigiSharp.Models;
 
 namespace HamDigiSharp.Decoders.Fsk;
@@ -62,7 +63,7 @@ public abstract class FskBaseDecoder : BaseDecoder
     public override IReadOnlyList<DecodeResult> Decode(
         ReadOnlySpan<float> samples, double freqLow, double freqHigh, string utcTime)
     {
-        if (samples.Length < _nsps * 30) return Array.Empty<DecodeResult>();
+        if (samples.Length < _nsps * 30) return [];
 
         int nMax = Math.Min(samples.Length, SampleRate * 15);
         double[] dd = new double[nMax];
@@ -119,7 +120,7 @@ public abstract class FskBaseDecoder : BaseDecoder
         }
 
         // If no short window passed, nothing to decode
-        if (candidates.Count == 0) return Array.Empty<DecodeResult>();
+        if (candidates.Count == 0) return [];
 
         // ── Pass 2: decode each candidate 1-second window ─────────────────────
         var results = new List<DecodeResult>();
@@ -203,7 +204,7 @@ public abstract class FskBaseDecoder : BaseDecoder
             MathNet.Numerics.IntegralTransforms.Fourier.Forward(buf,
                 MathNet.Numerics.IntegralTransforms.FourierOptions.AsymmetricScaling);
             for (int i = 0; i < FftLen / 2; i++)
-                spec[i] += buf[i].Real * buf[i].Real + buf[i].Imaginary * buf[i].Imaginary;
+                spec[i] += buf[i].MagnitudeSquared;
         }
 
         if (count > 0)
@@ -218,7 +219,7 @@ public abstract class FskBaseDecoder : BaseDecoder
             MathNet.Numerics.IntegralTransforms.Fourier.Forward(buf,
                 MathNet.Numerics.IntegralTransforms.FourierOptions.AsymmetricScaling);
             for (int i = 0; i < FftLen / 2; i++)
-                spec[i] = buf[i].Real * buf[i].Real + buf[i].Imaginary * buf[i].Imaginary;
+                spec[i] = buf[i].MagnitudeSquared;
         }
 
         return spec;
@@ -232,7 +233,8 @@ public abstract class FskBaseDecoder : BaseDecoder
         int ib = Math.Min(ps.Length - 1, (int)(freqHigh / df));
         if (ia >= ib) return 1e-10;
 
-        var vals = ps[ia..ib].OrderBy(x => x).ToArray();
+        var vals = ps[ia..ib];
+        Array.Sort(vals);
         return vals.Length == 0 ? 1e-10 : vals[vals.Length / 2];
     }
 
@@ -248,11 +250,11 @@ public abstract class FskBaseDecoder : BaseDecoder
 
         var csum = System.Numerics.Complex.Zero;
         for (int i = 0; i < Math.Min(_nsps, npts); i++) csum += c[i];
-        y[0] = csum.Real * csum.Real + csum.Imaginary * csum.Imaginary;
+        y[0] = csum.MagnitudeSquared;
         for (int i = 1; i < npts - _nsps; i++)
         {
             csum = csum - c[i - 1] + c[i + _nsps - 1];
-            y[i] = csum.Real * csum.Real + csum.Imaginary * csum.Imaginary;
+            y[i] = csum.MagnitudeSquared;
         }
     }
 

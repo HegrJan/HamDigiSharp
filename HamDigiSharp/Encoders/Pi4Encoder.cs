@@ -62,7 +62,7 @@ public sealed class Pi4Encoder : IDigitalModeEncoder
         double df   = 2.0 * SampleRate / 2048.0; // ≈ 10.77 Hz/bin (2× decoder df)
 
         // 1. Pack 8-char message → 42-bit value (big-endian base-38)
-        string msg = message.ToUpper().PadRight(8).Substring(0, 8);
+        string msg = message.ToUpper().PadRight(8)[..8];
         long dataVal = 0;
         foreach (char ch in msg)
         {

@@ -91,7 +91,7 @@ public sealed class Q65Decoder : BaseDecoder
         ReadOnlySpan<float> samples, double freqLow, double freqHigh, string utcTime)
     {
         if (samples.Length < _nsps * NSym / 2)
-            return Array.Empty<DecodeResult>();
+            return [];
 
         float[] samplesArr = samples.ToArray();  // needed for PLINQ capture (Span can't escape to lambdas)
 
@@ -257,7 +257,7 @@ public sealed class Q65Decoder : BaseDecoder
 
             var pow = new float[half];
             for (int k = 0; k < half; k++)
-                pow[k] = (float)(buf[k].Real * buf[k].Real + buf[k].Imaginary * buf[k].Imaginary);
+                pow[k] = (float)buf[k].MagnitudeSquared;
 
             result[sym] = pow;
         }

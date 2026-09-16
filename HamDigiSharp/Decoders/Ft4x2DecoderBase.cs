@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Numerics;
+using System.Numerics.Tensors;
 using HamDigiSharp.Codecs;
 using HamDigiSharp.Dsp;
 using HamDigiSharp.Models;
@@ -60,7 +61,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
         }
         PilotPositions = pilots.OrderBy(x => x).ToArray();
         DataPositions  = Enumerable.Range(0, NSymbols).Where(i => !pilots.Contains(i)).ToArray();
-        AllCostas      = new[] { CostasA, CostasB, CostasC, CostasD };
+        AllCostas      = [CostasA, CostasB, CostasC, CostasD];
     }
 
     // ── XOR scramble mask shared by FT4 and FT2 ─────────────────────────────
@@ -111,7 +112,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
         // RealTimeDecoder are fully processed rather than silently truncated.
         int n  = Math.Max(samples.Length, _nMax);
         var dd = new double[n];
-        for (int i = 0; i < samples.Length; i++) dd[i] = samples[i];
+        TensorPrimitives.ConvertTruncating<float, double>(samples, dd);
         return dd;
     }
 
@@ -179,7 +180,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
         // Accumulate power spectrum in parallel.
         // Thread-local state bundles both the power accumulator and the FFT work buffer
         // so cbuf is allocated once per thread, not once per loop iteration.
-        var lockObj = new object();
+        var lockObj = new Lock();
         double[] savg   = new double[nh1];
         double   savgSum = 0;
 
@@ -196,16 +197,15 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
                 }
                 Fft.ForwardInPlace(ls.Cbuf);
                 for (int i = 0; i < nh1; i++)
-                    ls.Accum[i] += ls.Cbuf[i].Real * ls.Cbuf[i].Real + ls.Cbuf[i].Imaginary * ls.Cbuf[i].Imaginary;
+                    ls.Accum[i] += ls.Cbuf[i].MagnitudeSquared;
                 return ls;
             },
             ls =>
             {
                 lock (lockObj)
                 {
-                    double localSum = 0;
-                    for (int i = 0; i < nh1; i++) { savg[i] += ls.Accum[i]; localSum += ls.Accum[i]; }
-                    savgSum += localSum;
+                    TensorPrimitives.Add(savg, ls.Accum, savg);
+                    savgSum += TensorPrimitives.Sum<double>(ls.Accum);
                 }
             });
 
@@ -352,13 +352,11 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
                 Fft.ForwardInPlace(cbuf);
 
                 int    expTone  = cos[k];
-                double sigPow   = cbuf[expTone].Real * cbuf[expTone].Real
-                                + cbuf[expTone].Imaginary * cbuf[expTone].Imaginary;
+                double sigPow   = cbuf[expTone].MagnitudeSquared;
                 double noisePow = 1e-20;
                 for (int t = 0; t < 4; t++)
                     if (t != expTone)
-                        noisePow += cbuf[t].Real * cbuf[t].Real
-                                  + cbuf[t].Imaginary * cbuf[t].Imaginary;
+                        noisePow += cbuf[t].MagnitudeSquared;
                 score += sigPow / (noisePow / 3 + 1e-20);
             }
         }
@@ -384,8 +382,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
                 for (int z = 0; z < nss; z++) cbuf[z] = cd[k * nss + z];
                 Fft.ForwardInPlace(cbuf);
                 for (int x = 0; x < NBins; x++)
-                    s4[k, x] = Math.Sqrt(cbuf[x].Real * cbuf[x].Real
-                                       + cbuf[x].Imaginary * cbuf[x].Imaginary);
+                    s4[k, x] = Math.Sqrt(cbuf[x].MagnitudeSquared);
             }
         }
         finally { ArrayPool<Complex>.Shared.Return(cbuf); }
@@ -451,7 +448,8 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
             var channels = new List<double[]>(5) { llrNom };
             var seen     = new HashSet<int> { dtBest };
 
-            foreach (int off in new[] { dtBest - step, dtBest - step2, dtBest + step2, dtBest + step })
+            ReadOnlySpan<int> offsets = [dtBest - step, dtBest - step2, dtBest + step2, dtBest + step];
+            foreach (int off in offsets)
             {
                 int clamped = Math.Clamp(off, 0, maxDt);
                 if (!seen.Add(clamped)) continue;
@@ -1093,7 +1091,7 @@ public abstract class Ft4x2DecoderBase : BaseDecoder
     public override IReadOnlyList<DecodeResult> Decode(
         ReadOnlySpan<float> samples, double freqLow, double freqHigh, string utcTime)
     {
-        if (samples.Length < _nMax / 4) return Array.Empty<DecodeResult>();
+        if (samples.Length < _nMax / 4) return [];
 
         if (Options.ClearAverage) ClearAveraging();
 

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Numerics;
+using HamDigiSharp.Dsp;
 using HamDigiSharp.Codecs;
 using HamDigiSharp.Models;
 using MathNet.Numerics.IntegralTransforms;
@@ -90,7 +91,7 @@ public sealed class WsprDecoder : BaseDecoder
     public override IReadOnlyList<DecodeResult> Decode(
         ReadOnlySpan<float> samples, double freqLow, double freqHigh, string utcTime)
     {
-        if (samples.Length < 12000 * 100) return Array.Empty<DecodeResult>();
+        if (samples.Length < 12000 * 100) return [];
 
         double centerFreq = (freqLow + freqHigh) / 2.0;
         var (idat, qdat) = MixAndDecimate(samples, centerFreq);
@@ -405,7 +406,7 @@ public sealed class WsprDecoder : BaseDecoder
             for (int j = 0; j < NfftW; j++)
             {
                 var c = buf[(j + NfftW / 2) % NfftW];
-                ps[j, t] = (float)(c.Real * c.Real + c.Imaginary * c.Imaginary);
+                ps[j, t] = (float)c.MagnitudeSquared;
             }
         }
         return ps;

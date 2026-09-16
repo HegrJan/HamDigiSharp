@@ -23,7 +23,7 @@ public abstract class BaseDecoder : IDigitalModeDecoder
     private readonly double[] _dupFreqs = new double[MaxDup];
     private int _dupCount;
     private string _lastPeriodTime = "";
-    private readonly object _emitLock = new();
+    private readonly Lock _emitLock = new();
 
     protected BaseDecoder() { Array.Fill(_dupMsgs, ""); }
 
@@ -84,14 +84,25 @@ public abstract class BaseDecoder : IDigitalModeDecoder
     protected static string ExtractCall(string msg)
     {
         if (string.IsNullOrWhiteSpace(msg)) return "";
-        var parts = msg.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        foreach (var p in parts)
+        ReadOnlySpan<char> span = msg.AsSpan().Trim();
+        foreach (Range r in span.Split(' '))
         {
-            string s = p.Trim('<', '>');
-            if (s.Length >= 3 && s.Any(char.IsLetter) && s.Any(char.IsDigit))
-                return s;
+            ReadOnlySpan<char> s = span[r].Trim("<>");
+            if (s.Length >= 3 && HasLetterAndDigit(s))
+                return s.ToString();
         }
         return "";
+
+        static bool HasLetterAndDigit(ReadOnlySpan<char> s)
+        {
+            bool letter = false, digit = false;
+            foreach (char c in s)
+            {
+                letter |= char.IsLetter(c);
+                digit  |= char.IsDigit(c);
+            }
+            return letter && digit;
+        }
     }
 
     /// <summary>

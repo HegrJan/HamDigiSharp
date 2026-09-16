@@ -86,7 +86,7 @@ public sealed class Pi4Decoder : BaseDecoder
     public override IReadOnlyList<DecodeResult> Decode(
         ReadOnlySpan<float> samples, double freqLow, double freqHigh, string utcTime)
     {
-        if (samples.Length < SampleRate * 14) return Array.Empty<DecodeResult>();
+        if (samples.Length < SampleRate * 14) return [];
 
         double[] dat = new double[samples.Length];
         for (int i = 0; i < samples.Length; i++) dat[i] = samples[i];

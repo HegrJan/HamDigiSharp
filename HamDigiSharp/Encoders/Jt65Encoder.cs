@@ -246,16 +246,16 @@ public sealed class Jt65Encoder : IDigitalModeEncoder
 
         if (s == "CQ")  { nc = NBASE + 1; return true; }
         if (s == "QRZ") { nc = NBASE + 2; return true; }
-        if (s.StartsWith("CQ ") && s.Length == 6 && int.TryParse(s.Substring(3), out int nf) && nf >= 0 && nf <= 999)
+        if (s.StartsWith("CQ ") && s.Length == 6 && int.TryParse(s.AsSpan(3), out int nf) && nf >= 0 && nf <= 999)
         { nc = NBASE + 3 + nf; return true; }
         if (s == "DE") { nc = 267796945; return true; }
 
         // Normalize to 6 chars: standard callsign has digit at position 2 (0-indexed)
-        string tmp = s.PadRight(6).Substring(0, 6);
+        string tmp = s.PadRight(6)[..6];
         if (tmp[2] < '0' || tmp[2] > '9')
         {
             // Try prepending a space (e.g., "W1AW" → " W1AW ")
-            tmp = (" " + s).PadRight(6).Substring(0, 6);
+            tmp = (" " + s).PadRight(6)[..6];
         }
 
         static int NChar(char c)
@@ -299,9 +299,9 @@ public sealed class Jt65Encoder : IDigitalModeEncoder
         if (g == "73")  { ng = NGBASE + 64; return true; }
 
         // Signal report "-12" or "R-12"
-        if (g.Length >= 3 && g[0] == '-' && int.TryParse(g.Substring(1), out int neg)
+        if (g.Length >= 3 && g[0] == '-' && int.TryParse(g.AsSpan(1), out int neg)
             && neg >= 1 && neg <= 30) { ng = NGBASE + 1 + neg; return true; }
-        if (g.Length >= 4 && g[0] == 'R' && g[1] == '-' && int.TryParse(g.Substring(2), out int rneg)
+        if (g.Length >= 4 && g[0] == 'R' && g[1] == '-' && int.TryParse(g.AsSpan(2), out int rneg)
             && rneg >= 1 && rneg <= 30) { ng = NGBASE + 31 + rneg; return true; }
 
         // Grid locator "FN42"
@@ -323,7 +323,7 @@ public sealed class Jt65Encoder : IDigitalModeEncoder
     private static void PackFreeText(string msg, out int nc1, out int nc2, out int nc3)
     {
         const string c = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ +-./?@";
-        string m = msg.ToUpperInvariant().PadRight(13).Substring(0, 13);
+        string m = msg.ToUpperInvariant().PadRight(13)[..13];
 
         nc1 = 0; nc2 = 0; nc3 = 0;
         for (int i =  0; i <  5; i++) { int j = c.IndexOf(m[i]); if (j < 0) j = 36; nc1 = nc1 * 42 + j; }
