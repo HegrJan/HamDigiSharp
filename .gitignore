@@ -6,6 +6,7 @@ build/
 *.suo
 .vs/
 _ffttest/
+BenchmarkDotNet.Artifacts/
 
 # Scratch / diagnostic scripts
 diag*.csx
