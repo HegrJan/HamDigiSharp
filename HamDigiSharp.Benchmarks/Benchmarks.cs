@@ -9,14 +9,15 @@ using HamDigiSharp.Models;
 using System.Diagnostics;
 
 // Quick mode: args = ["quick"] → Stopwatch timing (10 warm-up + 10 measure)
-// Full mode:  no args → BenchmarkDotNet full statistical run
+// Full mode:  no args → BenchmarkDotNet full statistical run; other args (e.g. --filter *Fft*) go to BenchmarkSwitcher
 if (args.Length > 0 && args[0] == "quick")
 {
     RunQuick();
 }
 else
 {
-    BenchmarkSwitcher.FromAssembly(typeof(DecodeBenchmarks).Assembly).RunAll();
+    var switcher = BenchmarkSwitcher.FromAssembly(typeof(DecodeBenchmarks).Assembly);
+    if (args.Length == 0) switcher.RunAll(); else switcher.Run(args);
 }
 
 static void RunQuick()
@@ -133,5 +134,40 @@ public class DecodeBenchmarks
         var rng = new Random(seed);
         for (int i = 0; i < buf.Length; i++)
             buf[i] += (float)(noiseAmp * (rng.NextDouble() * 2 - 1) * Math.Sqrt(3));
+    }
+}
+
+[MemoryDiagnoser]
+[SimpleJob(warmupCount: 2, iterationCount: 5)]
+public class FftBenchmarks
+{
+    private System.Numerics.Complex[] _src = [];
+    private System.Numerics.Complex[] _buf = [];
+
+    [Params(32, 512, 1152, 3200, 3840, 192000)]
+    public int N { get; set; }
+
+    [GlobalSetup]
+    public void Setup()
+    {
+        var rng = new Random(1);
+        _src = new System.Numerics.Complex[N];
+        for (int i = 0; i < N; i++) _src[i] = new(rng.NextDouble() - 0.5, rng.NextDouble() - 0.5);
+        _buf = new System.Numerics.Complex[N];
+    }
+
+    [Benchmark(Baseline = true, Description = "MathNet Fourier.Forward")]
+    public void MathNetForward()
+    {
+        _src.CopyTo(_buf, 0);
+        MathNet.Numerics.IntegralTransforms.Fourier.Forward(_buf,
+            MathNet.Numerics.IntegralTransforms.FourierOptions.AsymmetricScaling);
+    }
+
+    [Benchmark(Description = "KissFft Fft.ForwardInPlace")]
+    public void KissForward()
+    {
+        _src.CopyTo(_buf, 0);
+        HamDigiSharp.Dsp.Fft.ForwardInPlace(_buf);
     }
 }
